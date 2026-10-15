@@ -32,7 +32,7 @@ func TestEncodeDeterministicAndDecodable(t *testing.T) {
 
 func TestSwirlMaskAndBodyAreSeparate(t *testing.T) {
 	t.Parallel()
-	svg, err := os.ReadFile("../../cmd/uploader/packaging/stone.svg")
+	svg, err := os.ReadFile("../../packaging/stone.svg")
 	require.NoError(t, err)
 	s := parseStone(string(svg))
 	mask := s.swirlMask(36)

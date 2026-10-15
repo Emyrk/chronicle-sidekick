@@ -1,0 +1,61 @@
+# Builds Chronicle Sidekick for macOS, Windows and Linux. Run on a macOS
+# runner: the darwin tray needs cgo, while windows/linux are pure Go and
+# cross-compile. Releases are cut by pushing a tag like v0.1.0. Unsigned in v1.
+version: 2
+project_name: chronicle-sidekick
+
+# GoReleaser only builds and packages (--skip=publish); the workflow publishes
+# the generated assets to the matching GitHub release.
+builds:
+  - id: darwin
+    main: .
+    binary: chronicle-sidekick
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    env: [CGO_ENABLED=1]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+  - id: windows
+    main: .
+    binary: chronicle-sidekick
+    goos: [windows]
+    goarch: [amd64]
+    env: [CGO_ENABLED=0]
+    # windowsgui: no console window behind the tray icon.
+    ldflags: ["-s -w -H=windowsgui -X main.version={{ .Version }}"]
+  - id: linux
+    main: .
+    binary: chronicle-sidekick
+    goos: [linux]
+    goarch: [amd64]
+    env: [CGO_ENABLED=0]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+universal_binaries:
+  - ids: [darwin]
+    replace: true
+    name_template: chronicle-sidekick
+    hooks:
+      post:
+        - cmd: scripts/macos-app.sh "{{ .Path }}" "{{ .Version }}" "dist/Chronicle-Sidekick-macos.zip"
+
+archives:
+  - id: windows
+    ids: [windows]
+    formats: [binary]
+    name_template: Chronicle-Sidekick-windows-amd64
+  - id: linux
+    ids: [linux]
+    formats: [tar.gz]
+    name_template: Chronicle-Sidekick-linux-amd64
+    files: [none*]
+
+# checksums.txt is written by the workflow after every asset exists: the macOS
+# zip is made by a post-hook, after goreleaser's own checksum step would run.
+checksum:
+  disable: true
+
+release:
+  disable: true
+
+changelog:
+  disable: true

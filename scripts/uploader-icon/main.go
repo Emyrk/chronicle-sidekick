@@ -1,5 +1,5 @@
-// Command uploader-icon renders the Chronicle Uploader stone glyph from its
-// SVG master (cmd/uploader/packaging/stone.svg) into the committed tray PNGs
+// Command uploader-icon renders the Chronicle Sidekick stone glyph from its
+// SVG master (packaging/stone.svg) into the committed tray PNGs
 // and the app icon (.icns: the stone on a gold-to-brown gradient square). The
 // tray set is the stone body without its spiral plus a swirl-only alpha mask
 // per size; the uploader tints the mask with the state colour.
