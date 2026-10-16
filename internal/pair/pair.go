@@ -33,6 +33,11 @@ type Client struct {
 	// BaseURL is the Chronicle site, e.g. https://chronicleclassic.com.
 	BaseURL string
 	HTTP    *http.Client
+	// Installation metadata links this OAuth grant to one managed Sidekick.
+	InstallationID       string
+	InstallationName     string
+	InstallationPlatform string
+	InstallationVersion  string
 	// DeviceAccessToken overrides OAuth polling in tests.
 	DeviceAccessToken func(context.Context, *oauth2.Config, *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
 }
@@ -40,7 +45,12 @@ type Client struct {
 // Start begins the RFC 8628 device authorization flow.
 func (c *Client) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
 	ctx = c.clientContext(ctx)
-	out, err := c.config().DeviceAuth(ctx)
+	out, err := c.config().DeviceAuth(ctx,
+		oauth2.SetAuthURLParam("installation_id", c.InstallationID),
+		oauth2.SetAuthURLParam("installation_name", c.InstallationName),
+		oauth2.SetAuthURLParam("installation_platform", c.InstallationPlatform),
+		oauth2.SetAuthURLParam("installation_version", c.InstallationVersion),
+	)
 	if err == nil && (out.DeviceCode == "" || out.UserCode == "" || out.VerificationURI == "") {
 		err = errors.New("server sent an incomplete device authorization response")
 	}

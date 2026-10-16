@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/google/uuid v1.6.0
 	github.com/ncruces/zenity v0.7.5
 	github.com/shirou/gopsutil/v4 v4.25.9
 	github.com/stretchr/testify v1.11.1

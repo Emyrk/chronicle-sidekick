@@ -13,6 +13,8 @@ Each selected WoW folder's `realmlist.wtf` determines its destination. One Sidek
 
 Legacy clients may keep `realmlist.wtf` beside `Wow.exe` or under `Data/<locale>/realmlist.wtf`. The sidekick supports both locations.
 
+When connected, Sidekick reports its app version, platform, configured WoW folder paths, routed Chronicle communities, and active health issues to Chronicle once a minute. Chronicle uses this status to show whether each connected computer is running and correctly configured.
+
 ## Development
 
 ```sh
