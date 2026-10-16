@@ -51,6 +51,35 @@ func LogFiles(logDirs []string) []File {
 	return out
 }
 
+// Files lists combat logs matching exact paths or glob patterns. Duplicate
+// matches are collapsed, which matters when a live log also matches a rotated
+// log pattern.
+func Files(patterns []string) []File {
+	seen := map[string]bool{}
+	var paths []string
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			if !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
+	}
+	sort.Strings(paths)
+	out := make([]File, 0, len(paths))
+	for _, path := range paths {
+		if IsArchive(path) {
+			continue
+		}
+		size, err := fileSize(path)
+		if err == nil {
+			out = append(out, File{Path: path, Size: size})
+		}
+	}
+	return out
+}
+
 // IsArchive reports whether path is a log renamed by Archive.
 func IsArchive(path string) bool {
 	return strings.HasPrefix(filepath.Base(path), archivePrefix)
@@ -98,6 +127,17 @@ func NewTracker(uploaded map[string]int64) *Tracker {
 // trigger is never lost to a temporary problem such as being signed out.
 // Recording reports whether any log grew within the idle window.
 func (t *Tracker) Observe(now time.Time, files []File, wowRunning, manual bool, trig Trigger) (upload []File, recording bool) {
+	var selected func(File) bool
+	if manual {
+		selected = func(File) bool { return true }
+	}
+	return t.ObserveSelected(now, files, wowRunning, selected, trig)
+}
+
+// ObserveSelected is Observe with a per-file manual trigger. A nil function
+// means no manual upload; otherwise only files for which it returns true are
+// manually queued.
+func (t *Tracker) ObserveSelected(now time.Time, files []File, wowRunning bool, manual func(File) bool, trig Trigger) (upload []File, recording bool) {
 	// The first poll with WoW not running behaves like an exit: it picks up a
 	// log left over from a session that ended while the helper was not running.
 	exited := !wowRunning && (!t.seeded || t.wasRunning)
@@ -129,7 +169,7 @@ func (t *Tracker) Observe(now time.Time, files []File, wowRunning, manual bool, 
 		}
 		failed := f.Size == tr.failed
 		switch {
-		case manual:
+		case manual != nil && manual(f):
 			tr.queued = true
 		case failed:
 			// Don't retry a permanent failure until the log changes.

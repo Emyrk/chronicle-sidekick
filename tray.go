@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,12 +26,13 @@ import (
 )
 
 type app struct {
-	server string
-	layout tenant.Layout
-	store  *store.Store
-	logger *slog.Logger
-	engine *engine.Engine
-	cancel context.CancelFunc
+	server         string
+	uploadOverride string
+	layout         tenant.Layout
+	store          *store.Store
+	logger         *slog.Logger
+	engine         *engine.Engine
+	cancel         context.CancelFunc
 
 	mu     sync.Mutex
 	status engine.Status
@@ -41,6 +41,7 @@ type app struct {
 
 	updateLink string
 	pairing    bool   // a pairing is in flight
+	pairCode   string // device code shown while the pairing is waiting
 	pairMsg    string // last pairing outcome, shown until the next attempt
 
 	authMu     sync.Mutex
@@ -48,8 +49,17 @@ type app struct {
 	tokenDirty bool
 }
 
+type wowMenuEntry struct {
+	item   *systray.MenuItem
+	cancel context.CancelFunc
+}
+
 type menuItems struct {
-	status, folder, report, connect, disconnect, update *systray.MenuItem
+	status, upload, wows, report, connect, disconnect, update *systray.MenuItem
+	wowFolders                                                map[string]wowMenuEntry
+	uploadEntries                                             []wowMenuEntry
+	uploadDirs                                                []string
+	uploadCount                                               int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -67,12 +77,8 @@ func (a *app) onReady(ctx context.Context) {
 
 	a.items.status = systray.AddMenuItem("Starting…", "")
 	a.items.status.Disable()
-	a.items.folder = systray.AddMenuItem("", "")
-	a.items.folder.Disable()
-	host := systray.AddMenuItem("Connected to "+a.serverHost(), a.server)
-	host.Disable()
 	systray.AddSeparator()
-	upload := systray.AddMenuItem("Upload now", "Upload your latest combat log")
+	a.items.upload = systray.AddMenuItem("Upload now", "Upload combat logs")
 	a.items.report = systray.AddMenuItem("Open last report", "")
 	a.items.report.Disable()
 	a.items.connect = systray.AddMenuItem("Connect to Chronicle…", "")
@@ -82,7 +88,15 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
 	systray.AddSeparator()
-	choose := systray.AddMenuItem("Choose WoW folder…", "")
+	a.items.wows = systray.AddMenuItem("World of Warcraft folders", "Configured World of Warcraft installations")
+	a.items.wowFolders = map[string]wowMenuEntry{}
+	for _, path := range configuredWoWPaths(a.store.Get()) {
+		a.addWoWMenuEntry(ctx, path)
+	}
+	a.setWoWMenuTitle(len(a.items.wowFolders))
+	a.refreshUploadMenu(ctx)
+	choose := systray.AddMenuItem("Add WoW folder…", "Watch another World of Warcraft installation")
+	clearFolders := systray.AddMenuItem("Use automatic WoW detection", "Forget manually selected WoW folders")
 	archive := systray.AddMenuItemCheckbox("Archive the log after upload", "Rename the combat log once it is uploaded so the next session starts a fresh one", !a.store.Get().KeepLog)
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
@@ -92,7 +106,6 @@ func (a *app) onReady(ctx context.Context) {
 	a.ready = true
 	a.mu.Unlock()
 	a.render()
-	a.renderFolder()
 
 	go a.engine.Run(ctx)
 	go a.startup(ctx)
@@ -103,8 +116,8 @@ func (a *app) onReady(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-upload.ClickedCh:
-				a.engine.UploadNow()
+			case <-a.items.upload.ClickedCh:
+				a.uploadFromMainMenu()
 			case <-a.items.report.ClickedCh:
 				if u := a.current().ReportURL; u != "" {
 					openURL(u)
@@ -116,7 +129,9 @@ func (a *app) onReady(ctx context.Context) {
 			case <-a.items.update.ClickedCh:
 				openURL(a.updateURL())
 			case <-choose.ClickedCh:
-				a.chooseFolder()
+				a.chooseFolder(ctx)
+			case <-clearFolders.ClickedCh:
+				a.clearWoWFolders(ctx)
 			case <-archive.ClickedCh:
 				on := !archive.Checked()
 				a.toggle(archive, on)
@@ -189,10 +204,269 @@ func (a *app) toggle(item *systray.MenuItem, on bool) {
 	}
 }
 
-func (a *app) chooseFolder() {
+type wowUploadTarget struct {
+	Name string
+	Dirs []string
+}
+
+func wowUploadTargets(installs []wowdir.Install) []wowUploadTarget {
+	nameCount := map[string]int{}
+	for _, install := range installs {
+		name := install.Flavor
+		if name == "" {
+			name = filepath.Base(install.Dir)
+		}
+		nameCount[name]++
+	}
+
+	var targets []wowUploadTarget
+	for _, install := range installs {
+		name := install.Flavor
+		if name == "" {
+			name = filepath.Base(install.Dir)
+		}
+		if nameCount[name] > 1 {
+			name = fmt.Sprintf("%s (%s)", name, filepath.Base(install.Dir))
+		}
+		targets = append(targets, wowUploadTarget{Name: name, Dirs: []string{install.Dir}})
+	}
+	return targets
+}
+
+func (a *app) refreshUploadMenu(ctx context.Context) {
+	targets := wowUploadTargets(a.installs())
+
+	a.mu.Lock()
+	old := a.items.uploadEntries
+	a.items.uploadEntries = nil
+	a.items.uploadDirs = nil
+	a.items.uploadCount = len(targets)
+	if len(targets) == 1 {
+		a.items.uploadDirs = append([]string(nil), targets[0].Dirs...)
+	}
+	a.mu.Unlock()
+	for _, entry := range old {
+		entry.cancel()
+		entry.item.Remove()
+	}
+
+	switch len(targets) {
+	case 0:
+		a.items.upload.SetTitle("Upload now")
+	case 1:
+		a.items.upload.SetTitle("Upload " + targets[0].Name)
+	default:
+		a.items.upload.SetTitle("Upload now")
+		for _, target := range targets {
+			item := a.items.upload.AddSubMenuItem(target.Name, "Upload new logs from "+target.Name)
+			entryCtx, cancel := context.WithCancel(ctx)
+			a.mu.Lock()
+			a.items.uploadEntries = append(a.items.uploadEntries, wowMenuEntry{item: item, cancel: cancel})
+			a.mu.Unlock()
+			go uploadOnClick(entryCtx, item, a.engine, target.Dirs)
+		}
+	}
+}
+
+func (a *app) uploadFromMainMenu() {
+	a.mu.Lock()
+	count := a.items.uploadCount
+	dirs := append([]string(nil), a.items.uploadDirs...)
+	a.mu.Unlock()
+	switch count {
+	case 0:
+		a.engine.UploadNow()
+	case 1:
+		a.engine.UploadNowFor(dirs)
+	}
+}
+
+func uploadOnClick(ctx context.Context, item *systray.MenuItem, e *engine.Engine, dirs []string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-item.ClickedCh:
+			e.UploadNowFor(dirs)
+		}
+	}
+}
+
+func addUploadActions(parent *systray.MenuItem, ctx context.Context, e *engine.Engine, targets []wowUploadTarget) {
+	switch len(targets) {
+	case 0:
+		return
+	case 1:
+		item := parent.AddSubMenuItem("Upload now", "Upload new logs from "+targets[0].Name)
+		go uploadOnClick(ctx, item, e, targets[0].Dirs)
+	default:
+		menu := parent.AddSubMenuItem("Upload now", "Choose a WoW client to upload")
+		for _, target := range targets {
+			item := menu.AddSubMenuItem(target.Name, "Upload new logs from "+target.Name)
+			go uploadOnClick(ctx, item, e, target.Dirs)
+		}
+	}
+}
+
+type wowSiteLink struct {
+	Name string
+	URL  string
+}
+
+func (a *app) wowFolderSites(path string) []wowSiteLink {
+	found, err := wowdir.Resolve(path, a.layout)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var links []wowSiteLink
+	for _, install := range found {
+		baseURL := install.BaseURL
+		if a.uploadOverride != "" {
+			baseURL = a.uploadOverride
+		}
+		if baseURL == "" || seen[baseURL] {
+			continue
+		}
+		seen[baseURL] = true
+		name := install.Flavor
+		if name == "" {
+			name = baseURL
+		}
+		links = append(links, wowSiteLink{Name: name, URL: baseURL})
+	}
+	return links
+}
+
+func (a *app) addWoWMenuEntry(ctx context.Context, path string) {
+	path = filepath.Clean(path)
+	a.mu.Lock()
+	if _, ok := a.items.wowFolders[path]; ok {
+		a.mu.Unlock()
+		return
+	}
+	label := a.wowFolderLabel(path)
+	item := a.items.wows.AddSubMenuItem(label, path)
+	entryCtx, cancel := context.WithCancel(ctx)
+	installs, _ := wowdir.Resolve(path, a.layout)
+	addUploadActions(item, entryCtx, a.engine, wowUploadTargets(installs))
+	sites := a.wowFolderSites(path)
+	switch len(sites) {
+	case 1:
+		visit := item.AddSubMenuItem("Visit Site", sites[0].URL)
+		go openSiteOnClick(entryCtx, visit, sites[0].URL)
+	default:
+		if len(sites) > 1 {
+			visit := item.AddSubMenuItem("Visit Site", "Open a Chronicle community")
+			for _, site := range sites {
+				link := visit.AddSubMenuItem(site.Name, site.URL)
+				go openSiteOnClick(entryCtx, link, site.URL)
+			}
+		}
+	}
+	remove := item.AddSubMenuItem("Remove", "Stop watching "+path)
+	a.items.wowFolders[path] = wowMenuEntry{item: item, cancel: cancel}
+	count := len(a.items.wowFolders)
+	a.mu.Unlock()
+	a.setWoWMenuTitle(count)
+
+	go func() {
+		select {
+		case <-entryCtx.Done():
+		case <-remove.ClickedCh:
+			a.removeWoWFolder(ctx, path)
+		}
+	}()
+}
+
+func openSiteOnClick(ctx context.Context, item *systray.MenuItem, siteURL string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-item.ClickedCh:
+			openURL(siteURL)
+		}
+	}
+}
+
+func (a *app) wowFolderLabel(path string) string {
+	found, err := wowdir.Resolve(path, a.layout)
+	if err == nil && len(found) == 1 && found[0].Flavor != "" {
+		return fmt.Sprintf("%s — %s", found[0].Flavor, filepath.Base(path))
+	}
+	if err == nil && len(found) > 1 {
+		return fmt.Sprintf("%s (%d clients)", filepath.Base(path), len(found))
+	}
+	return filepath.Base(path)
+}
+
+func (a *app) removeWoWFolder(ctx context.Context, path string) {
+	if err := a.store.Update(func(s *store.State) { removeWoWPath(s, path) }); err != nil {
+		a.logger.Error("remove wow folder", "path", path, "err", err)
+		return
+	}
+
+	path = filepath.Clean(path)
+	a.mu.Lock()
+	entry, ok := a.items.wowFolders[path]
+	if ok {
+		delete(a.items.wowFolders, path)
+	}
+	count := len(a.items.wowFolders)
+	a.mu.Unlock()
+	if ok {
+		entry.cancel()
+		entry.item.Remove()
+	}
+	a.refreshUploadMenu(ctx)
+	a.setWoWMenuTitle(count)
+}
+
+func (a *app) clearWoWFolders(ctx context.Context) {
+	if err := a.store.Update(func(s *store.State) {
+		s.WoWPath = ""
+		s.WoWPaths = nil
+	}); err != nil {
+		a.logger.Error("clear wow folders", "err", err)
+		return
+	}
+
+	a.mu.Lock()
+	entries := a.items.wowFolders
+	a.items.wowFolders = map[string]wowMenuEntry{}
+	a.mu.Unlock()
+	for _, entry := range entries {
+		entry.cancel()
+		entry.item.Remove()
+	}
+	a.refreshUploadMenu(ctx)
+	a.setWoWMenuTitle(0)
+}
+
+func (a *app) setWoWMenuTitle(count int) {
+	if count == 0 {
+		a.items.wows.SetTitle("World of Warcraft folders (automatic)")
+		return
+	}
+	a.items.wows.SetTitle(fmt.Sprintf("World of Warcraft folders (%d)", count))
+}
+
+func wowFolderError(err error) (title, message string) {
+	var unsupported *wowdir.UnsupportedRealmError
+	if errors.As(err, &unsupported) {
+		return "Unsupported WoW server", fmt.Sprintf(
+			"Sidekick found realmlist.wtf, but %q does not map to a Chronicle community yet. This folder was not added.",
+			unsupported.Host,
+		)
+	}
+	return "WoW folder not recognized", "Sidekick could not find a supported World of Warcraft client in that folder. This folder was not added."
+}
+
+func (a *app) chooseFolder(ctx context.Context) {
 	path, err := zenity.SelectFile(
 		zenity.Directory(),
-		zenity.Title("Choose your World of Warcraft folder"),
+		zenity.Title("Add a World of Warcraft folder"),
 	)
 	if err != nil {
 		if err != zenity.ErrCanceled {
@@ -201,13 +475,22 @@ func (a *app) chooseFolder() {
 		return
 	}
 	if _, err := wowdir.Resolve(path, a.layout); err != nil {
-		notify("Chronicle", "That doesn't look like a World of Warcraft folder.")
+		title, message := wowFolderError(err)
+		if dialogErr := zenity.Error(message, zenity.Title(title)); dialogErr != nil && dialogErr != zenity.ErrCanceled {
+			a.logger.Error("show wow folder error", "err", dialogErr)
+		}
 		return
 	}
-	if err := a.store.Update(func(s *store.State) { s.WoWPath = path }); err != nil {
+	path = filepath.Clean(path)
+	added := false
+	if err := a.store.Update(func(s *store.State) { added = addWoWPath(s, path) }); err != nil {
 		a.logger.Error("save wow path", "err", err)
+		return
 	}
-	a.renderFolder()
+	if added {
+		a.addWoWMenuEntry(ctx, path)
+		a.refreshUploadMenu(ctx)
+	}
 }
 
 func (a *app) current() engine.Status {
@@ -221,7 +504,6 @@ func (a *app) onStatus(s engine.Status) {
 	a.status = s
 	a.mu.Unlock()
 	a.render()
-	a.renderFolder()
 }
 
 func (a *app) render() {
@@ -250,32 +532,19 @@ func (a *app) render() {
 	}
 	switch {
 	case a.pairing:
-		a.items.status.SetTitle("Waiting for you to approve in your browser…")
+		detail := pairingStatus(a.pairCode)
+		a.items.status.SetTitle(detail)
+		systray.SetTooltip("Chronicle Sidekick: " + detail)
 	case a.pairMsg != "":
 		a.items.status.SetTitle(a.pairMsg)
 	}
 }
 
-// serverHost is the tenant host shown in the menu so a wrong server is visible.
-func (a *app) serverHost() string {
-	if u, err := url.Parse(a.server); err == nil && u.Host != "" {
-		return u.Host
+func pairingStatus(code string) string {
+	if code == "" {
+		return "Waiting for device code…"
 	}
-	return a.server
-}
-
-func (a *app) renderFolder() {
-	a.mu.Lock()
-	ready := a.ready
-	a.mu.Unlock()
-	if !ready {
-		return
-	}
-	label := "WoW folder: not found"
-	if found := a.installs(); len(found) > 0 {
-		label = fmt.Sprintf("WoW folder: %s", filepath.Base(filepath.Dir(found[0].Dir)))
-	}
-	a.items.folder.SetTitle(label)
+	return fmt.Sprintf("Code %s: approve in your browser…", code)
 }
 
 // startup shows the not-connected state once on a first launch. It never opens
@@ -335,6 +604,7 @@ func (a *app) connect(ctx context.Context) {
 		return
 	}
 	a.pairing = true
+	a.pairCode = ""
 	a.pairMsg = ""
 	a.mu.Unlock()
 	a.render()
@@ -343,6 +613,7 @@ func (a *app) connect(ctx context.Context) {
 
 	a.mu.Lock()
 	a.pairing = false
+	a.pairCode = ""
 	a.pairMsg = msg
 	a.mu.Unlock()
 	a.render()
@@ -358,6 +629,10 @@ func (a *app) pair(ctx context.Context) string {
 		notify("Chronicle", "Couldn't reach Chronicle. Check your connection and try again.")
 		return "Couldn't reach Chronicle, try again"
 	}
+	a.mu.Lock()
+	a.pairCode = start.UserCode
+	a.mu.Unlock()
+	a.render()
 	openURL(pair.VerificationURL(start))
 
 	outcome, token, err := c.Wait(ctx, start)

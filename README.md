@@ -1,6 +1,17 @@
 # Chronicle Sidekick
 
-Chronicle Sidekick is a small background app for macOS, Windows, and Linux. It watches World of Warcraft combat logs and uploads the latest log to Chronicle when the user selects **Upload now**.
+Chronicle Sidekick is a small background app for macOS, Windows, and Linux. It watches World of Warcraft combat logs and uploads the latest log to the correct Chronicle community when the user selects **Upload now**.
+
+Each selected WoW folder's `realmlist.wtf` determines its destination. One Sidekick can watch multiple WoW installations at the same time, and one Chronicle sign-in works for every supported community. With one client, the main upload action names it directly. With multiple clients, the upload action has one entry per WoW. The tray's **World of Warcraft folders** submenu also lets you upload a folder's logs, open its Chronicle site, or remove it. Each community supplies its own default log format and flavor, so the sidekick does not stamp those values on uploads.
+
+| WoW client | Combat logs | Supported realmlists |
+| --- | --- | --- |
+| WoW Forever | `Logs/WoWCombatLog.txt` and unique combat logs | WoW Forever's configured Blizzard client |
+| Vanilla 1.12a | `CustomData/Chronicle_<character>.txt` | OctoWoW, CapyCraft, VanillaPlus, Kronos |
+| TBC 2.4.3 | `Logs/WoWCombatLog.txt` | Moonwell, Crusader Storm |
+| Wrath 3.3.5a | `Logs/WoWCombatLog.txt` | ChromieCraft, Warmane |
+
+Legacy clients may keep `realmlist.wtf` beside `Wow.exe` or under `Data/<locale>/realmlist.wtf`. The sidekick supports both locations.
 
 ## Development
 

@@ -173,6 +173,19 @@ func TestArchive(t *testing.T) {
 	require.NoFileExists(t, path)
 }
 
+func TestFilesMatchesChronicleCustomDataLogs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	capy := filepath.Join(dir, "Chronicle_Capy.txt")
+	octo := filepath.Join(dir, "Chronicle_Octo.txt")
+	require.NoError(t, os.WriteFile(capy, []byte("capy"), 0o644))
+	require.NoError(t, os.WriteFile(octo, []byte("octo"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("no"), 0o644))
+
+	got := watch.Files([]string{filepath.Join(dir, "Chronicle_*.txt")})
+	require.Equal(t, []watch.File{{Path: capy, Size: 4}, {Path: octo, Size: 4}}, got)
+}
+
 // The log is appended to by another process that keeps it open; polling must
 // see the new size each time (on Windows this needs a handle-based stat).
 func TestLogFilesSeesGrowth(t *testing.T) {
