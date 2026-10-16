@@ -38,12 +38,20 @@ func TestDeviceAuthorization(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client := &pair.Client{BaseURL: srv.URL}
+	client := &pair.Client{
+		BaseURL:        srv.URL,
+		InstallationID: "019a5994-13a7-7eb6-bc5c-17b91c9b62b3", InstallationName: "Gaming PC",
+		InstallationPlatform: "windows/amd64", InstallationVersion: "1.2.3",
+	}
 	device, err := client.Start(context.Background())
 	require.NoError(t, err)
 	form := <-forms
 	require.Equal(t, "chronicle-sidekick", form.Get("client_id"))
 	require.Equal(t, "all", form.Get("scope"))
+	require.Equal(t, "019a5994-13a7-7eb6-bc5c-17b91c9b62b3", form.Get("installation_id"))
+	require.Equal(t, "Gaming PC", form.Get("installation_name"))
+	require.Equal(t, "windows/amd64", form.Get("installation_platform"))
+	require.Equal(t, "1.2.3", form.Get("installation_version"))
 	require.Equal(t, "device-code", device.DeviceCode)
 	require.Equal(t, "ABCD-EFGH", device.UserCode)
 	require.WithinDuration(t, time.Now().Add(10*time.Minute), device.Expiry, 2*time.Second)

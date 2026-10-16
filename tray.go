@@ -18,6 +18,7 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/autostart"
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/pair"
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/update"
@@ -33,6 +34,7 @@ type app struct {
 	logger         *slog.Logger
 	engine         *engine.Engine
 	cancel         context.CancelFunc
+	installation   installationInfo
 
 	mu     sync.Mutex
 	status engine.Status
@@ -110,6 +112,7 @@ func (a *app) onReady(ctx context.Context) {
 	go a.engine.Run(ctx)
 	go a.startup(ctx)
 	go a.checkUpdate(ctx)
+	go a.reportStatus(ctx)
 
 	go func() {
 		for {
@@ -154,6 +157,37 @@ func (a *app) onReady(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+const statusInterval = time.Minute
+
+func (a *app) reportStatus(ctx context.Context) {
+	ticker := time.NewTicker(statusInterval)
+	defer ticker.Stop()
+	for {
+		a.reportStatusOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *app) reportStatusOnce(ctx context.Context) {
+	if a.cachedToken() == "" {
+		return
+	}
+	token, err := a.accessToken(ctx)
+	if err != nil {
+		a.logger.Warn("Sidekick status authentication", "err", err)
+		return
+	}
+	client := sidekick.Client{BaseURL: a.server, Token: token}
+	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version)
+	if err := client.Update(ctx, status); err != nil {
+		a.logger.Warn("Sidekick status update", "err", err)
+	}
 }
 
 // checkUpdate looks for a newer release once at launch and, if there is one,
@@ -555,7 +589,13 @@ func (a *app) startup(context.Context) {
 	}
 }
 
-func (a *app) pairClient() *pair.Client { return &pair.Client{BaseURL: a.server} }
+func (a *app) pairClient() *pair.Client {
+	return &pair.Client{
+		BaseURL:        a.server,
+		InstallationID: a.installation.ID, InstallationName: a.installation.Name,
+		InstallationPlatform: a.installation.Platform, InstallationVersion: a.installation.Version,
+	}
+}
 
 func (a *app) cachedToken() string {
 	a.authMu.Lock()
@@ -618,6 +658,7 @@ func (a *app) connect(ctx context.Context) {
 	a.mu.Unlock()
 	a.render()
 	a.engine.TokenChanged()
+	go a.reportStatusOnce(ctx)
 }
 
 // pair returns a failure message, or "" when connected.

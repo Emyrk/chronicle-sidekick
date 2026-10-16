@@ -6,12 +6,66 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
+
+func TestEnsureInstallationPersistsStableID(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.Open(path)
+	require.NoError(t, err)
+
+	first, err := ensureInstallation(st)
+	require.NoError(t, err)
+	second, err := ensureInstallation(st)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, second.ID)
+	_, err = uuid.Parse(first.ID)
+	require.NoError(t, err)
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	third, err := ensureInstallation(again)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, third.ID)
+}
+
+func TestInstallationMetadataFitsAPI(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "short", installationMetadata("short"))
+	require.Len(t, installationMetadata(string(make([]byte, 101))), 100)
+}
+
+func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
+	t.Parallel()
+	status := sidekickStatus([]wowdir.Install{{
+		Flavor: "Warmane", Dir: filepath.Join("games", "warmane"),
+		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
+	}}, "windows/amd64", "1.2.3")
+	require.Equal(t, sidekick.Status{
+		Platform: "windows/amd64", Version: "1.2.3",
+		WoWDirectories: []sidekick.WoWDirectory{{
+			Path: filepath.Join("games", "warmane"), TenantName: "Warmane",
+			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
+		}},
+		Issues: []sidekick.Issue{},
+	}, status)
+}
+
+func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
+	t.Parallel()
+	installs := make([]wowdir.Install, maxStatusWoWDirectories+1)
+	for i := range installs {
+		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
+	}
+	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev").WoWDirectories, maxStatusWoWDirectories)
+}
 
 func TestWoWFolderErrorIsActionable(t *testing.T) {
 	t.Parallel()

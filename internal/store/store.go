@@ -20,6 +20,9 @@ const keyringUser = "default"
 
 // State is everything the uploader remembers between runs.
 type State struct {
+	// InstallationID is the stable identity Chronicle uses to manage this
+	// Sidekick installation. It is generated once and reused across pairings.
+	InstallationID string `json:"installation_id,omitempty"`
 	// Tenant is the server chosen with --server or by pairing; empty means
 	// the default tenant.
 	Tenant tenant.Tenant `json:"tenant,omitempty"`

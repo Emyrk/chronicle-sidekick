@@ -11,9 +11,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
+	"github.com/google/uuid"
+
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
@@ -64,6 +68,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open state: %w", err)
 	}
+	installation, err := ensureInstallation(st)
+	if err != nil {
+		return fmt.Errorf("initialize Sidekick installation: %w", err)
+	}
 
 	// There is no terminal for a tray app; log to a file.
 	var logger *slog.Logger
@@ -109,7 +117,10 @@ func run() error {
 	if err != nil {
 		logger.Warn("load OAuth token", "err", err)
 	}
-	a := &app{server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token}
+	a := &app{
+		server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token,
+		installation: installation,
+	}
 	if *server != "" {
 		a.uploadOverride = tn.BaseURL
 	}
@@ -147,6 +158,64 @@ func run() error {
 		}
 	}()
 	return a.runTray(ctx)
+}
+
+type installationInfo struct {
+	ID       string
+	Name     string
+	Platform string
+	Version  string
+}
+
+func installationMetadata(value string) string {
+	const maxLength = 100
+	if len(value) > maxLength {
+		return value[:maxLength]
+	}
+	return value
+}
+
+func ensureInstallation(st *store.Store) (installationInfo, error) {
+	state := st.Get()
+	id, err := uuid.Parse(state.InstallationID)
+	if err != nil || id == uuid.Nil {
+		id = uuid.New()
+		if err := st.Update(func(s *store.State) { s.InstallationID = id.String() }); err != nil {
+			return installationInfo{}, err
+		}
+	}
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		name = "Chronicle Sidekick"
+	}
+	return installationInfo{
+		ID: id.String(), Name: installationMetadata(name),
+		Platform: installationMetadata(runtime.GOOS + "/" + runtime.GOARCH),
+		Version:  installationMetadata(version),
+	}, nil
+}
+
+const maxStatusWoWDirectories = 50
+
+func sidekickStatus(installs []wowdir.Install, platform, appVersion string) sidekick.Status {
+	if len(installs) > maxStatusWoWDirectories {
+		installs = installs[:maxStatusWoWDirectories]
+	}
+	directories := make([]sidekick.WoWDirectory, 0, len(installs))
+	for _, install := range installs {
+		name := install.Flavor
+		if name == "" {
+			name = install.BaseURL
+		}
+		directories = append(directories, sidekick.WoWDirectory{
+			Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL, Realmlist: install.Realmlist,
+		})
+	}
+	return sidekick.Status{
+		Platform: platform, Version: appVersion,
+		WoWDirectories: directories,
+		Issues:         []sidekick.Issue{},
+	}
 }
 
 func configuredWoWPaths(st store.State) []string {
