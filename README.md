@@ -1,6 +1,6 @@
 # Chronicle Sidekick
 
-Chronicle Sidekick is a small background app for macOS, Windows, and Linux. It watches World of Warcraft combat logs and uploads each play session to Chronicle automatically.
+Chronicle Sidekick is a small background app for macOS, Windows, and Linux. It watches World of Warcraft combat logs and uploads the latest log to Chronicle when the user selects **Upload now**.
 
 ## Development
 

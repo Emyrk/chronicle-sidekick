@@ -83,7 +83,6 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.update.Hide()
 	systray.AddSeparator()
 	choose := systray.AddMenuItem("Choose WoW folder…", "")
-	idle := systray.AddMenuItemCheckbox("Also upload when the log goes quiet", "", a.store.Get().UploadOnIdle)
 	archive := systray.AddMenuItemCheckbox("Archive the log after upload", "Rename the combat log once it is uploaded so the next session starts a fresh one", !a.store.Get().KeepLog)
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
@@ -118,10 +117,6 @@ func (a *app) onReady(ctx context.Context) {
 				openURL(a.updateURL())
 			case <-choose.ClickedCh:
 				a.chooseFolder()
-			case <-idle.ClickedCh:
-				on := !idle.Checked()
-				a.toggle(idle, on)
-				_ = a.store.Update(func(s *store.State) { s.UploadOnIdle = on })
 			case <-archive.ClickedCh:
 				on := !archive.Checked()
 				a.toggle(archive, on)

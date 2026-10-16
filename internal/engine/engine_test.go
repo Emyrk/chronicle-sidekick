@@ -121,7 +121,7 @@ func (h *harness) step(t *testing.T, now time.Time, manual bool) {
 	require.Eventually(t, func() bool { return !h.e.Busy() }, 5*time.Second, time.Millisecond)
 }
 
-func TestEngineUploadsOnWoWExit(t *testing.T) {
+func TestEngineUploadsOnlyOnManualRequest(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.res = upload.Result{ReportURL: "https://x/logs/1"}
@@ -131,19 +131,30 @@ func TestEngineUploadsOnWoWExit(t *testing.T) {
 	require.Equal(t, 0, h.uploads)
 	require.Equal(t, engine.StateNoLog, h.statuses[len(h.statuses)-1].State)
 
+	// Log growth followed by a long quiet period does not upload automatically.
+	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat and more"), 0o644))
+	h.step(t, t0.Add(time.Minute), false)
+	h.step(t, t0.Add(10*time.Minute), false)
+	require.Equal(t, 0, h.uploads)
+
+	// Exiting WoW does not upload automatically either.
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0.Add(5*time.Second), false)
+	h.step(t, t0.Add(11*time.Minute), false)
+	require.Equal(t, 0, h.uploads)
+
+	// The user's Upload now request sends the latest log.
+	h.step(t, t0.Add(11*time.Minute+5*time.Second), true)
 	require.Equal(t, 1, h.uploads)
 	last := h.statuses[len(h.statuses)-1]
 	require.Equal(t, engine.StateUploaded, last.State)
 	require.Equal(t, "https://x/logs/1", last.ReportURL)
 	require.Equal(t, []string{"Log uploaded"}, h.notified)
-	require.Equal(t, int64(len("some combat")), h.st.Get().Uploaded[h.logPath])
+	require.Equal(t, int64(len("some combat and more")), h.st.Get().Uploaded[h.logPath])
 
-	// Nothing more to send.
-	h.step(t, t0.Add(10*time.Second), false)
+	// Nothing more is sent without another request.
+	h.step(t, t0.Add(12*time.Minute), false)
 	require.Equal(t, 1, h.uploads)
 }
 
@@ -153,7 +164,7 @@ func TestEngineRetriesOfflineThenSucceeds(t *testing.T) {
 	h.running = false
 	h.results = []error{errors.New("dial tcp: no route to host"), errors.New("dial tcp: no route to host"), nil}
 
-	h.step(t, time.Now(), false)
+	h.step(t, time.Now(), true)
 	require.Equal(t, 3, h.uploads)
 	require.Equal(t, engine.StateUploaded, h.statuses[len(h.statuses)-1].State)
 }
@@ -164,7 +175,7 @@ func TestEngineDuplicate(t *testing.T) {
 	h.running = false
 	h.res = upload.Result{Duplicate: true, ReportURL: "https://x/logs/file/abc"}
 
-	h.step(t, time.Now(), false)
+	h.step(t, time.Now(), true)
 	require.Equal(t, []string{"Already uploaded"}, h.notified)
 }
 
@@ -175,11 +186,11 @@ func TestEngineReconnect(t *testing.T) {
 	h.token = ""
 	t0 := time.Now()
 
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 0, h.uploads)
 	require.Equal(t, engine.StateReconnect, h.statuses[len(h.statuses)-1].State)
 
-	// Signing in uploads the log that was waiting.
+	// Signing in uploads the manually queued log that was waiting.
 	h.token = "fresh"
 	h.e.TokenChanged()
 	h.step(t, t0.Add(5*time.Second), false)
@@ -194,7 +205,7 @@ func TestEngineRejectedToken(t *testing.T) {
 	h.results = []error{upload.ErrUnauthorized}
 	t0 := time.Now()
 
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	// The worker wakes the poll loop, which shows the reconnect state.
 	h.step(t, t0.Add(5*time.Second), false)
 	require.Equal(t, engine.StateReconnect, h.statuses[len(h.statuses)-1].State)
@@ -228,10 +239,9 @@ func TestEngineGivesUpOnServerErrors(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		h.results = append(h.results, unavailable)
 	}
-	require.NoError(t, h.st.Update(func(s *store.State) { s.UploadOnIdle = true }))
 	t0 := time.Now()
 
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 6, h.uploads)
 	require.Equal(t, []string{"Chronicle upload failed"}, h.notified)
 
@@ -242,7 +252,7 @@ func TestEngineGivesUpOnServerErrors(t *testing.T) {
 	h.results = nil
 	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat and more"), 0o644))
 	h.step(t, t0.Add(20*time.Minute), false) // sees the growth
-	h.step(t, t0.Add(30*time.Minute), false) // idle for longer than IdleAfter
+	h.step(t, t0.Add(30*time.Minute), true)  // the user retries the changed log
 	require.Equal(t, 7, h.uploads)
 }
 
@@ -283,7 +293,7 @@ func TestEngineArchivesAfterExitUpload(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 1, h.uploads)
 	require.FileExists(t, h.logPath) // archived from the next poll, not inline
 
@@ -304,7 +314,7 @@ func TestEngineArchivesAfterExitUpload(t *testing.T) {
 	require.NotContains(t, h.st.Get().Uploaded, archives[0]) // archives are not tracked
 	require.NotContains(t, h.st.Get().Uploaded, h.logPath)
 
-	// The next session's log is uploaded on its own; the archive is not re-sent.
+	// The next session's log is uploaded on request; the archive is not re-sent.
 	require.NoError(t, os.WriteFile(h.logPath, []byte("next"), 0o644))
 	h.mu.Lock()
 	h.running = true
@@ -313,7 +323,7 @@ func TestEngineArchivesAfterExitUpload(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0.Add(20*time.Second), false)
+	h.step(t, t0.Add(20*time.Second), true)
 	require.Equal(t, 2, h.uploads)
 }
 
@@ -324,7 +334,7 @@ func TestEngineKeepLog(t *testing.T) {
 	require.NoError(t, h.st.Update(func(s *store.State) { s.KeepLog = true }))
 	t0 := time.Now()
 
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	h.step(t, t0.Add(5*time.Second), false)
 	require.Equal(t, 1, h.uploads)
 	require.FileExists(t, h.logPath)
@@ -353,14 +363,13 @@ func TestEngineArchiveFailureNotRetried(t *testing.T) {
 	}
 	var warns atomic.Int32
 	h := newHarnessLogger(t, nil, slog.New(warnCounter{Handler: slog.DiscardHandler, warns: &warns}))
-	require.NoError(t, h.st.Update(func(s *store.State) { s.UploadOnIdle = true }))
 	t0 := time.Now()
 	dir := filepath.Dir(h.logPath)
 
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false) // uploads on exit
+	h.step(t, t0, true) // the user uploads before archiving
 	require.Equal(t, 1, h.uploads)
 
 	require.NoError(t, os.Chmod(dir, 0o555))
@@ -379,7 +388,7 @@ func TestEngineArchiveFailureNotRetried(t *testing.T) {
 	// Once the log changes it is uploaded and archived as usual.
 	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat and more"), 0o644))
 	h.step(t, t0.Add(2*time.Hour), false)               // sees the growth
-	h.step(t, t0.Add(3*time.Hour), false)               // idle for longer than IdleAfter
+	h.step(t, t0.Add(3*time.Hour), true)                // the user uploads it again
 	h.step(t, t0.Add(3*time.Hour+5*time.Second), false) // archives
 	require.Equal(t, 2, h.uploads)
 	require.NoFileExists(t, h.logPath)

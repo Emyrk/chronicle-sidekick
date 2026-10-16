@@ -194,7 +194,7 @@ func pruneUploaded(s *store.Store, log *slog.Logger) store.State {
 	return s.Get()
 }
 
-// UploadNow asks for an upload of every log that has new data.
+// UploadNow is the only upload trigger. It asks for every log that has new data.
 func (e *Engine) UploadNow() {
 	select {
 	case e.manual <- struct{}{}:
@@ -244,11 +244,9 @@ func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 	files := watch.LogFiles(logDirs)
 	running := e.cfg.Running(ctx, installDirs)
 	st := e.cfg.Store.Get()
-	trig := watch.Trigger{
-		OnExit:    true,
-		OnIdle:    st.UploadOnIdle,
-		IdleAfter: e.cfg.IdleAfter,
-	}
+	// Uploads are user-triggered for now. IdleAfter is still used to decide
+	// whether the tray should say the combat log is actively recording.
+	trig := watch.Trigger{IdleAfter: e.cfg.IdleAfter}
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {

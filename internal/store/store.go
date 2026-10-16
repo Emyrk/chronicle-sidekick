@@ -25,8 +25,6 @@ type State struct {
 	Tenant tenant.Tenant `json:"tenant,omitempty"`
 	// WoWPath is the folder the user picked; empty means auto-detect.
 	WoWPath string `json:"wow_path,omitempty"`
-	// UploadOnIdle also uploads when the log goes quiet, not only on WoW exit.
-	UploadOnIdle bool `json:"upload_on_idle,omitempty"`
 	// KeepLog turns off renaming the combat log after it was uploaded. The
 	// zero value archives, which is the default.
 	KeepLog bool `json:"keep_log,omitempty"`
