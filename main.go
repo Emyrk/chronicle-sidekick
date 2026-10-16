@@ -1,5 +1,5 @@
 // Command uploader is a tray app that uploads WoW Forever combat logs to
-// Chronicle after each play session.
+// Chronicle when the user requests an upload.
 package main
 
 import (

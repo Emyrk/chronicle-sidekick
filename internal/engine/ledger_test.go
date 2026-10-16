@@ -45,7 +45,7 @@ func TestEngineSkipsSameLogAtANewPath(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 1, h.uploads)
 	require.Len(t, h.sources, 1)
 	require.NotEmpty(t, h.sources[0], "the upload carried a source id")
@@ -84,7 +84,7 @@ func TestEngineUploadsGrownLogOnceThenSkips(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 1, h.uploads)
 
 	// The same session with more fights in it, under a new name. The ledger
@@ -117,7 +117,7 @@ func TestEngineSkipsWhatTheServerSaysItHas(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 0, h.uploads, "the body was sent anyway")
 	require.Equal(t, 1, h.lookups)
 	st := h.st.Get()
@@ -147,7 +147,7 @@ func TestEngineUploadsWhenTheLookupFails(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 1, h.uploads, "an unreachable server must not stop the upload")
 	require.Equal(t, 1, h.lookups)
 	require.Contains(t, h.notified, "Already uploaded")
@@ -167,7 +167,7 @@ func TestEngineUploadsWhenTheServerHasOnlyPartOfIt(t *testing.T) {
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0, false)
+	h.step(t, t0, true)
 	require.Equal(t, 1, h.uploads)
 	require.Equal(t, int64(len(body)), h.st.Get().Logs[h.sources[0]].Size)
 }
