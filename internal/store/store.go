@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zalando/go-keyring"
+	"golang.org/x/oauth2"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
@@ -141,21 +142,58 @@ func (s *Store) Update(fn func(*State)) error {
 	return os.Rename(tmp, s.path)
 }
 
-// Token reads the bearer token from the OS keychain ("" when none).
-func Token() string {
-	t, err := keyring.Get(keyringService, keyringUser)
-	if err != nil {
-		return ""
+// LoadToken reads OAuth credentials from the OS keychain. Raw bearer tokens
+// from older development builds are accepted as non-expiring access tokens.
+func LoadToken() (*oauth2.Token, error) {
+	encoded, err := keyring.Get(keyringService, keyringUser)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return nil, nil
 	}
-	return t
+	if err != nil {
+		return nil, err
+	}
+	return decodeToken(encoded)
 }
 
-// SaveToken stores the bearer token in the OS keychain.
-func SaveToken(token string) error {
-	return keyring.Set(keyringService, keyringUser, token)
+// SaveToken stores OAuth credentials in the OS keychain.
+func SaveToken(token *oauth2.Token) error {
+	encoded, err := encodeToken(token)
+	if err != nil {
+		return err
+	}
+	return keyring.Set(keyringService, keyringUser, encoded)
 }
 
-// DeleteToken removes the bearer token from the OS keychain.
+// SaveAccessToken stores a non-expiring bearer token for local development.
+func SaveAccessToken(token string) error {
+	return SaveToken(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})
+}
+
+func encodeToken(token *oauth2.Token) (string, error) {
+	if token == nil || token.AccessToken == "" {
+		return "", errors.New("cannot save empty OAuth token")
+	}
+	encoded, err := json.Marshal(token)
+	return string(encoded), err
+}
+
+func decodeToken(encoded string) (*oauth2.Token, error) {
+	var token oauth2.Token
+	if err := json.Unmarshal([]byte(encoded), &token); err != nil {
+		// Before OAuth device authorization, Sidekick stored a raw bearer token.
+		// Preserve that format for development tokens and a smooth upgrade.
+		if encoded != "" {
+			return &oauth2.Token{AccessToken: encoded, TokenType: "Bearer"}, nil
+		}
+		return nil, err
+	}
+	if token.AccessToken == "" {
+		return nil, errors.New("saved OAuth token has no access token")
+	}
+	return &token, nil
+}
+
+// DeleteToken removes the OAuth credentials from the OS keychain.
 func DeleteToken() error {
 	err := keyring.Delete(keyringService, keyringUser)
 	if errors.Is(err, keyring.ErrNotFound) {

@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/systray"
 	"github.com/ncruces/zenity"
+	"golang.org/x/oauth2"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/autostart"
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
@@ -21,6 +22,7 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/update"
+	"github.com/Emyrk/chronicle-sidekick/internal/upload"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
 
@@ -39,8 +41,11 @@ type app struct {
 
 	updateLink string
 	pairing    bool   // a pairing is in flight
-	account    string // device name when connected, "" otherwise
 	pairMsg    string // last pairing outcome, shown until the next attempt
+
+	authMu     sync.Mutex
+	token      *oauth2.Token
+	tokenDirty bool
 }
 
 type menuItems struct {
@@ -108,7 +113,7 @@ func (a *app) onReady(ctx context.Context) {
 			case <-a.items.connect.ClickedCh:
 				go a.connect(ctx)
 			case <-a.items.disconnect.ClickedCh:
-				a.disconnect()
+				go a.disconnect(ctx)
 			case <-a.items.update.ClickedCh:
 				openURL(a.updateURL())
 			case <-choose.ClickedCh:
@@ -253,8 +258,6 @@ func (a *app) render() {
 		a.items.status.SetTitle("Waiting for you to approve in your browser…")
 	case a.pairMsg != "":
 		a.items.status.SetTitle(a.pairMsg)
-	case a.account != "" && s.State != engine.StateReconnect:
-		a.items.status.SetTitle(s.Detail + " (Connected as " + a.account + ")")
 	}
 }
 
@@ -280,30 +283,53 @@ func (a *app) renderFolder() {
 	a.items.folder.SetTitle(label)
 }
 
-// startup shows the not-connected state once on a first launch, and looks up
-// the device name when a token is already stored. It never opens the browser.
-func (a *app) startup(ctx context.Context) {
-	token := store.Token()
-	if token == "" {
+// startup shows the not-connected state once on a first launch. It never opens
+// the browser.
+func (a *app) startup(context.Context) {
+	if a.cachedToken() == "" {
 		notify("Chronicle", "Not connected. Choose \"Connect to Chronicle…\" from the tray menu to start uploading.")
-		return
 	}
-	a.setAccount(ctx, token)
 }
 
 func (a *app) pairClient() *pair.Client { return &pair.Client{BaseURL: a.server} }
 
-func (a *app) setAccount(ctx context.Context, token string) {
-	name, err := a.pairClient().WhoAmI(ctx, token)
-	if err != nil {
-		// A rejected token is handled by the next upload; offline is fine.
-		a.logger.Warn("whoami", "err", err)
-		return
+func (a *app) cachedToken() string {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	if a.token == nil {
+		return ""
 	}
-	a.mu.Lock()
-	a.account = name
-	a.mu.Unlock()
-	a.render()
+	return a.token.AccessToken
+}
+
+// accessToken returns a current access token. The lock serializes refresh-token
+// rotation so two uploads cannot try to redeem the same refresh token.
+func (a *app) accessToken(ctx context.Context) (string, error) {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	if a.token == nil {
+		return "", upload.ErrUnauthorized
+	}
+	next, err := a.pairClient().Refresh(ctx, a.token)
+	if err != nil {
+		if errors.Is(err, pair.ErrUnauthorized) {
+			_ = store.DeleteToken()
+			a.token = nil
+			a.tokenDirty = false
+			return "", upload.ErrUnauthorized
+		}
+		return "", err
+	}
+	changed := next.AccessToken != a.token.AccessToken || next.RefreshToken != a.token.RefreshToken || !next.Expiry.Equal(a.token.Expiry)
+	a.token = next
+	a.tokenDirty = a.tokenDirty || changed
+	if a.tokenDirty {
+		if err := store.SaveToken(next); err != nil {
+			return "", fmt.Errorf("save refreshed OAuth token: %w", err)
+		}
+		a.tokenDirty = false
+	}
+	return next.AccessToken, nil
 }
 
 // connect runs the browser pairing flow.
@@ -331,14 +357,13 @@ func (a *app) connect(ctx context.Context) {
 // pair returns a failure message, or "" when connected.
 func (a *app) pair(ctx context.Context) string {
 	c := a.pairClient()
-	host, _ := os.Hostname()
-	start, err := c.Start(ctx, strings.TrimSpace("Chronicle Sidekick "+host))
+	start, err := c.Start(ctx)
 	if err != nil {
-		a.logger.Error("pair start", "err", err)
+		a.logger.Error("OAuth device authorization", "err", err)
 		notify("Chronicle", "Couldn't reach Chronicle. Check your connection and try again.")
 		return "Couldn't reach Chronicle, try again"
 	}
-	openURL(start.VerifyURL)
+	openURL(pair.VerificationURL(start))
 
 	outcome, token, err := c.Wait(ctx, start)
 	if err != nil {
@@ -347,11 +372,14 @@ func (a *app) pair(ctx context.Context) string {
 	switch {
 	case outcome == pair.Approved && err == nil:
 		if err := store.SaveToken(token); err != nil {
-			a.logger.Error("save token", "err", err)
+			a.logger.Error("save OAuth token", "err", err)
 			notify("Chronicle", "Couldn't save the sign-in to your keychain.")
 			return "Couldn't save the sign-in"
 		}
-		a.setAccount(ctx, token)
+		a.authMu.Lock()
+		a.token = token
+		a.tokenDirty = false
+		a.authMu.Unlock()
 		notify("Chronicle", "Connected. Your logs will upload automatically.")
 		return ""
 	case outcome == pair.Denied:
@@ -363,14 +391,20 @@ func (a *app) pair(ctx context.Context) string {
 	}
 }
 
-func (a *app) disconnect() {
+func (a *app) disconnect(ctx context.Context) {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	if err := a.pairClient().Revoke(ctx, a.token); err != nil {
+		a.logger.Warn("revoke OAuth token", "err", err)
+	}
 	if err := store.DeleteToken(); err != nil {
-		a.logger.Error("delete token", "err", err)
+		a.logger.Error("delete OAuth token", "err", err)
 		notify("Chronicle", "Couldn't remove the sign-in from your keychain.")
 		return
 	}
+	a.token = nil
+	a.tokenDirty = false
 	a.mu.Lock()
-	a.account = ""
 	a.pairMsg = ""
 	a.mu.Unlock()
 	a.engine.TokenChanged()

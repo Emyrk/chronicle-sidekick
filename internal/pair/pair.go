@@ -1,154 +1,186 @@
-// Package pair implements the client side of Chronicle's device pairing: the
-// uploader asks the server for a code, the user approves it in a browser, and
-// the uploader exchanges it for a per-device upload token.
+// Package pair implements Chronicle's OAuth 2.0 device authorization flow.
 package pair
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
-// Outcome is how a pairing ended.
+// Outcome is how a device authorization ended.
 type Outcome int
 
 const (
-	// Approved: Token is set.
+	// Approved means Token is set.
 	Approved Outcome = iota
 	Denied
 	Expired
 )
 
-// ErrUnauthorized means the device token was rejected.
-var ErrUnauthorized = errors.New("device token rejected")
+// ErrUnauthorized means the saved OAuth credentials can no longer be used.
+var ErrUnauthorized = errors.New("oauth credentials rejected")
 
-// Client talks to one Chronicle server.
+// Client talks to one Chronicle OAuth service.
 type Client struct {
 	// BaseURL is the Chronicle site, e.g. https://chronicleclassic.com.
 	BaseURL string
 	HTTP    *http.Client
-	// Sleep waits between polls; tests override it.
-	Sleep func(ctx context.Context, d time.Duration) error
+	// DeviceAccessToken overrides OAuth polling in tests.
+	DeviceAccessToken func(context.Context, *oauth2.Config, *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
 }
 
-// Start begins a pairing.
-func (c *Client) Start(ctx context.Context, deviceName string) (StartResponse, error) {
-	var out StartResponse
-	err := c.do(ctx, http.MethodPost, "/api/v1/devices/pair/start", "",
-		StartRequest{DeviceName: deviceName}, &out)
-	if err == nil && (out.DeviceCode == "" || out.VerifyURL == "") {
-		err = errors.New("server sent an incomplete pairing response")
+// Start begins the RFC 8628 device authorization flow.
+func (c *Client) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
+	ctx = c.clientContext(ctx)
+	out, err := c.config().DeviceAuth(ctx)
+	if err == nil && (out.DeviceCode == "" || out.UserCode == "" || out.VerificationURI == "") {
+		err = errors.New("server sent an incomplete device authorization response")
 	}
 	return out, err
 }
 
-// Wait polls until the pairing is resolved or ctx is done. The token is only
-// returned on Approved. Transient failures are retried until the pairing
-// expires.
-func (c *Client) Wait(ctx context.Context, s StartResponse) (Outcome, string, error) {
-	interval := time.Duration(s.Interval) * time.Second
-	if interval < time.Second {
-		interval = time.Second
+// VerificationURL returns the browser URL, including the user code when the
+// server did not provide verification_uri_complete itself.
+func VerificationURL(d *oauth2.DeviceAuthResponse) string {
+	if d == nil {
+		return ""
 	}
-	ttl := time.Duration(s.ExpiresIn) * time.Second
-	if ttl <= 0 {
-		ttl = 10 * time.Minute
+	if d.VerificationURIComplete != "" {
+		return d.VerificationURIComplete
 	}
-	deadline := time.Now().Add(ttl + interval)
-	sleep := c.Sleep
-	if sleep == nil {
-		sleep = sleepCtx
+	u, err := url.Parse(d.VerificationURI)
+	if err != nil {
+		return d.VerificationURI
 	}
-	for {
-		if err := sleep(ctx, interval); err != nil {
-			return Expired, "", err
-		}
-		var out PollResponse
-		err := c.do(ctx, http.MethodPost, "/api/v1/devices/pair/poll", "",
-			PollRequest{DeviceCode: s.DeviceCode}, &out)
-		if err == nil {
-			switch out.Status {
-			case PairStatusApproved:
-				if out.Token == "" {
-					return Expired, "", errors.New("server approved without a token")
-				}
-				return Approved, out.Token, nil
-			case PairStatusDenied:
-				return Denied, "", nil
-			case PairStatusExpired:
-				return Expired, "", nil
-			}
-		} else if ctx.Err() != nil {
-			return Expired, "", ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return Expired, "", nil
-		}
-	}
+	q := u.Query()
+	q.Set("user_code", d.UserCode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
-// WhoAmI returns the device name the server has for token.
-func (c *Client) WhoAmI(ctx context.Context, token string) (string, error) {
-	var out WhoAmIResponse
-	if err := c.do(ctx, http.MethodGet, "/api/v1/whoami/device", token, nil, &out); err != nil {
-		return "", err
+// Wait polls until the user approves, denies, or lets the device code expire.
+func (c *Client) Wait(ctx context.Context, d *oauth2.DeviceAuthResponse) (Outcome, *oauth2.Token, error) {
+	poll := c.DeviceAccessToken
+	if poll == nil {
+		poll = func(ctx context.Context, config *oauth2.Config, d *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
+			return config.DeviceAccessToken(ctx, d)
+		}
 	}
-	return out.DeviceName, nil
+	token, err := poll(c.clientContext(ctx), c.config(), d)
+	if err == nil {
+		if token == nil || token.AccessToken == "" || token.RefreshToken == "" {
+			return Expired, nil, errors.New("server sent incomplete OAuth credentials")
+		}
+		return Approved, token, nil
+	}
+	var retrieve *oauth2.RetrieveError
+	if errors.As(err, &retrieve) {
+		switch retrieve.ErrorCode {
+		case "access_denied":
+			return Denied, nil, nil
+		case "expired_token":
+			return Expired, nil, nil
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) && d != nil && !d.Expiry.IsZero() {
+		return Expired, nil, nil
+	}
+	return Expired, nil, err
 }
 
-// do sends a JSON request. The token only ever goes in the Authorization
-// header and never into an error.
-func (c *Client) do(ctx context.Context, method, path, token string, in, out any) error {
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
+// Refresh returns a usable access token, refreshing and rotating the saved
+// refresh token when necessary.
+func (c *Client) Refresh(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
+	if token == nil || token.AccessToken == "" {
+		return nil, ErrUnauthorized
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, body)
+	next, err := c.config().TokenSource(c.clientContext(ctx), token).Token()
+	if err == nil {
+		return next, nil
+	}
+	var retrieve *oauth2.RetrieveError
+	if errors.As(err, &retrieve) && (retrieve.ErrorCode == "invalid_grant" || retrieve.ErrorCode == "invalid_client") {
+		return nil, fmt.Errorf("%w: %s", ErrUnauthorized, retrieve.ErrorCode)
+	}
+	return nil, err
+}
+
+// Revoke invalidates the refresh token and its associated access token. OAuth
+// revocation is best effort; callers should still remove local credentials if
+// this fails because the user explicitly asked to disconnect.
+func (c *Client) Revoke(ctx context.Context, token *oauth2.Token) error {
+	if token == nil {
+		return nil
+	}
+	value, hint := token.RefreshToken, "refresh_token"
+	if value == "" {
+		value, hint = token.AccessToken, "access_token"
+	}
+	if value == "" {
+		return nil
+	}
+	form := url.Values{
+		"client_id":       {clientID},
+		"token":           {value},
+		"token_type_hint": {hint},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/oauth/revoke"), strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	httpc := c.HTTP
-	if httpc == nil {
-		httpc = &http.Client{Timeout: 30 * time.Second}
-	}
-	resp, err := httpc.Do(req)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
-		return ErrUnauthorized
-	case resp.StatusCode != http.StatusOK:
-		return fmt.Errorf("%s %s: HTTP %d", method, path, resp.StatusCode)
-	}
-	return json.Unmarshal(b, out)
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
+	var out oauthError
+	_ = json.Unmarshal(body, &out)
+	detail := out.Description
+	if detail == "" {
+		detail = out.Code
+	}
+	if detail != "" {
+		return fmt.Errorf("revoke OAuth token: HTTP %d: %s", resp.StatusCode, detail)
+	}
+	return fmt.Errorf("revoke OAuth token: HTTP %d", resp.StatusCode)
+}
+
+func (c *Client) config() *oauth2.Config {
+	return &oauth2.Config{
+		ClientID: clientID,
+		Scopes:   []string{scopeAll},
+		Endpoint: oauth2.Endpoint{
+			DeviceAuthURL: c.endpoint("/oauth/device/authorize"),
+			TokenURL:      c.endpoint("/oauth/token"),
+			AuthStyle:     oauth2.AuthStyleInParams,
+		},
+	}
+}
+
+func (c *Client) clientContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oauth2.HTTPClient, c.httpClient())
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
+func (c *Client) endpoint(path string) string {
+	return strings.TrimRight(c.BaseURL, "/") + path
 }
