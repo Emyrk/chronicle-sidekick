@@ -8,6 +8,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.9
 	github.com/stretchr/testify v1.11.1
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/oauth2 v0.34.0
 	golang.org/x/sys v0.46.0
 )
 

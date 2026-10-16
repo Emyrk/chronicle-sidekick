@@ -80,7 +80,7 @@ func run() error {
 	}
 
 	if *devToken != "" {
-		if err := store.SaveToken(*devToken); err != nil {
+		if err := store.SaveAccessToken(*devToken); err != nil {
 			return fmt.Errorf("save token to keychain: %w", err)
 		}
 	}
@@ -102,19 +102,31 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	a := &app{server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel}
+	token, err := store.LoadToken()
+	if err != nil {
+		logger.Warn("load OAuth token", "err", err)
+	}
+	a := &app{server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token}
 	a.engine = engine.New(engine.Config{
 		Store:    st,
 		Installs: a.installs,
-		Token:    store.Token,
-		Upload: func(ctx context.Context, token, path, sourceID string, size int64, fast bool) (upload.Result, error) {
+		Token:    a.cachedToken,
+		Upload: func(ctx context.Context, _ string, path, sourceID string, size int64, fast bool) (upload.Result, error) {
+			token, err := a.accessToken(ctx)
+			if err != nil {
+				return upload.Result{}, err
+			}
 			c := upload.Client{BaseURL: tn.BaseURL, Format: tn.Format, Flavor: tn.Flavor, Token: token, Fast: fast}
 			return c.Upload(ctx, path, sourceID, size)
 		},
 		// Lookup is the pre-flight check for a log this machine's ledger has
 		// never seen. A server without the route answers 404, which reads as
 		// "has nothing", and the log is uploaded as before.
-		Lookup: func(ctx context.Context, token, sourceID string) (upload.Have, error) {
+		Lookup: func(ctx context.Context, _ string, sourceID string) (upload.Have, error) {
+			token, err := a.accessToken(ctx)
+			if err != nil {
+				return upload.Have{}, err
+			}
 			c := upload.Client{BaseURL: tn.BaseURL, Token: token}
 			return c.Have(ctx, sourceID)
 		},
