@@ -10,18 +10,31 @@ import (
 
 func TestResolve(t *testing.T) {
 	t.Parallel()
-	def := tenant.Known[0]
-	require.Equal(t, def, tenant.Resolve(tenant.Tenant{}, ""))
-	custom := tenant.Resolve(tenant.Tenant{}, "https://x.example/")
-	require.Equal(t, "https://x.example", custom.BaseURL)
-	require.Equal(t, def.Format, custom.Format)
-	// A saved tenant sticks without flags.
-	require.Equal(t, custom, tenant.Resolve(custom, ""))
+	require.Equal(t, tenant.AuthBaseURL, tenant.Resolve(tenant.Tenant{}, "").BaseURL)
+	require.Equal(t, "https://x.example", tenant.Resolve(tenant.Tenant{}, "https://x.example/").BaseURL)
+	// Old saved single-server configuration migrates to the shared auth host.
+	old := tenant.Tenant{BaseURL: tenant.ForeverBaseURL, Format: "v22-cleu", Flavor: "vanilla,wow-forever"}
+	require.Equal(t, tenant.AuthBaseURL, tenant.Resolve(old, "").BaseURL)
 }
 
-// A tenant saved before layouts existed keeps working.
-func TestResolveBackfillsLayout(t *testing.T) {
+func TestForRealm(t *testing.T) {
 	t.Parallel()
-	got := tenant.Resolve(tenant.Tenant{BaseURL: "https://old.example"}, "")
-	require.Equal(t, tenant.DefaultLayout, got.Layout)
+	tests := map[string]string{
+		"185.165.170.6":           "https://octo.chronicleclassic.com",
+		"PLAY.OCTOWOW.ST.":        "https://octo.chronicleclassic.com",
+		"apac.capycraft.io":       "https://capy.chronicleclassic.com",
+		"logon.vanillaplus.org":   "https://vanillaplus.chronicleclassic.com",
+		"login3.twinstar-wow.com": "https://kronos.chronicleclassic.com",
+		"login.moonwell.su":       "https://moonwell.chronicleclassic.com",
+		"crusader-storm.com":      "https://crusader-storm.chronicleclassic.com",
+		"logon.chromiecraft.com":  "https://chromie.chronicleclassic.com",
+		"logon.warmane.com":       "https://warmane.chronicleclassic.com",
+	}
+	for host, want := range tests {
+		realm, ok := tenant.ForRealm(host)
+		require.True(t, ok, host)
+		require.Equal(t, want, realm.BaseURL, host)
+	}
+	_, ok := tenant.ForRealm("unknown.example")
+	require.False(t, ok)
 }

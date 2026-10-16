@@ -25,18 +25,22 @@ type harness struct {
 	st      *store.Store
 	logPath string
 
-	mu       sync.Mutex
-	running  bool
-	token    string
-	results  []error // consumed one per Upload call
-	res      upload.Result
-	uploads  int
-	sources  []string      // the source id of each Upload call
-	fast     []bool        // the fast flag of each Upload call
-	lookups  int           // pre-flight source lookups made
-	gate     chan struct{} // when set, Upload blocks until it is closed
-	notified []string
-	statuses []engine.Status
+	mu           sync.Mutex
+	running      bool
+	token        string
+	results      []error // consumed one per Upload call
+	res          upload.Result
+	uploads      int
+	sources      []string // the source id of each Upload call
+	destinations []string // Chronicle tenant URL of each Upload call
+	fast         []bool   // the fast flag of each Upload call
+	baseURL      string   // tenant URL returned with the test install
+	installs     []wowdir.Install
+	uploadPaths  []string
+	lookups      int           // pre-flight source lookups made
+	gate         chan struct{} // when set, Upload blocks until it is closed
+	notified     []string
+	statuses     []engine.Status
 }
 
 func newHarness(t testing.TB) *harness { return newHarnessToken(t, nil) }
@@ -63,9 +67,9 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 	st, err := store.Open(filepath.Join(dir, "state.json"))
 	require.NoError(t, err)
 	h.st = st
-	var lookupFn func(context.Context, string, string) (upload.Have, error)
+	var lookupFn func(context.Context, string, string, string) (upload.Have, error)
 	if lookup != nil {
-		lookupFn = func(_ context.Context, _, sourceID string) (upload.Have, error) {
+		lookupFn = func(_ context.Context, _, _, sourceID string) (upload.Have, error) {
 			h.mu.Lock()
 			h.lookups++
 			h.mu.Unlock()
@@ -73,9 +77,14 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 		}
 	}
 	h.e = engine.New(engine.Config{
-		Store:    st,
-		Logger:   logger,
-		Installs: func() []wowdir.Install { return []wowdir.Install{{Dir: filepath.Dir(logDir), LogDir: logDir}} },
+		Store:  st,
+		Logger: logger,
+		Installs: func() []wowdir.Install {
+			if h.installs != nil {
+				return h.installs
+			}
+			return []wowdir.Install{{Dir: filepath.Dir(logDir), LogDir: logDir, BaseURL: h.baseURL}}
+		},
 		Token: func() string {
 			if tokenFn != nil {
 				return tokenFn()
@@ -85,10 +94,12 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			return h.token
 		},
 		Lookup: lookupFn,
-		Upload: func(_ context.Context, _, _, sourceID string, _ int64, fast bool) (upload.Result, error) {
+		Upload: func(_ context.Context, _, baseURL, path, sourceID string, _ int64, fast bool) (upload.Result, error) {
 			h.mu.Lock()
 			h.uploads++
+			h.uploadPaths = append(h.uploadPaths, path)
 			h.sources = append(h.sources, sourceID)
+			h.destinations = append(h.destinations, baseURL)
 			h.fast = append(h.fast, fast)
 			gate := h.gate
 			var err error
@@ -119,6 +130,35 @@ func (h *harness) step(t *testing.T, now time.Time, manual bool) {
 	t.Helper()
 	h.e.Step(context.Background(), now, manual)
 	require.Eventually(t, func() bool { return !h.e.Busy() }, 5*time.Second, time.Millisecond)
+}
+
+func TestEngineRoutesUploadToInstallTenant(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.baseURL = "https://octo.chronicleclassic.com"
+	h.step(t, time.Now(), true)
+	require.Equal(t, []string{h.baseURL}, h.destinations)
+}
+
+func TestEngineUploadsOnlySelectedInstall(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	firstDir := filepath.Dir(filepath.Dir(h.logPath))
+	root := filepath.Dir(firstDir)
+	secondDir := filepath.Join(root, "_y_")
+	secondLogDir := filepath.Join(secondDir, "Logs")
+	secondLog := filepath.Join(secondLogDir, "WoWCombatLog.txt")
+	require.NoError(t, os.MkdirAll(secondLogDir, 0o755))
+	require.NoError(t, os.WriteFile(secondLog, []byte("second combat"), 0o644))
+	h.installs = []wowdir.Install{
+		{Dir: firstDir, LogDir: filepath.Dir(h.logPath), BaseURL: "https://first.example"},
+		{Dir: secondDir, LogDir: secondLogDir, BaseURL: "https://second.example"},
+	}
+
+	h.e.StepFor(context.Background(), time.Now(), []string{secondDir})
+	require.Eventually(t, func() bool { return !h.e.Busy() }, 5*time.Second, time.Millisecond)
+	require.Equal(t, []string{secondLog}, h.uploadPaths)
+	require.Equal(t, []string{"https://second.example"}, h.destinations)
 }
 
 func TestEngineUploadsOnlyOnManualRequest(t *testing.T) {

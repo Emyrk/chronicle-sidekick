@@ -37,7 +37,7 @@ func main() {
 func run() error {
 	var (
 		server   = flag.String("server", envOr("CHRONICLE_URL", ""), "Chronicle server URL; remembered for later launches")
-		wowPath  = flag.String("wow-path", "", "WoW folder, flavor folder or executable (overrides the saved choice)")
+		wowPath  = flag.String("wow-path", "", "WoW folder, flavor folder or executable (replaces saved folders for this launch and later launches)")
 		devToken = flag.String("dev-token", os.Getenv("CHRONICLE_UPLOADER_TOKEN"), "development only: token to store in the keychain instead of pairing (prefer CHRONICLE_UPLOADER_TOKEN; argv is visible to other processes)")
 	)
 	flag.Usage = func() {
@@ -85,7 +85,10 @@ func run() error {
 		}
 	}
 	if *wowPath != "" {
-		if err := st.Update(func(s *store.State) { s.WoWPath = *wowPath }); err != nil {
+		if err := st.Update(func(s *store.State) {
+			s.WoWPath = ""
+			s.WoWPaths = []string{filepath.Clean(*wowPath)}
+		}); err != nil {
 			return err
 		}
 	}
@@ -97,7 +100,7 @@ func run() error {
 	if prioErr != nil {
 		logger.Warn("could not lower process priority", "err", prioErr)
 	}
-	logger.Info("tenant", "base_url", tn.BaseURL, "format", tn.Format, "flavor", tn.Flavor)
+	logger.Info("chronicle auth server", "base_url", tn.BaseURL)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -107,27 +110,30 @@ func run() error {
 		logger.Warn("load OAuth token", "err", err)
 	}
 	a := &app{server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token}
+	if *server != "" {
+		a.uploadOverride = tn.BaseURL
+	}
 	a.engine = engine.New(engine.Config{
 		Store:    st,
 		Installs: a.installs,
 		Token:    a.cachedToken,
-		Upload: func(ctx context.Context, _ string, path, sourceID string, size int64, fast bool) (upload.Result, error) {
+		Upload: func(ctx context.Context, _ string, baseURL, path, sourceID string, size int64, fast bool) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
 			if err != nil {
 				return upload.Result{}, err
 			}
-			c := upload.Client{BaseURL: tn.BaseURL, Format: tn.Format, Flavor: tn.Flavor, Token: token, Fast: fast}
+			c := upload.Client{BaseURL: baseURL, Token: token, Fast: fast}
 			return c.Upload(ctx, path, sourceID, size)
 		},
 		// Lookup is the pre-flight check for a log this machine's ledger has
 		// never seen. A server without the route answers 404, which reads as
 		// "has nothing", and the log is uploaded as before.
-		Lookup: func(ctx context.Context, _ string, sourceID string) (upload.Have, error) {
+		Lookup: func(ctx context.Context, _ string, baseURL, sourceID string) (upload.Have, error) {
 			token, err := a.accessToken(ctx)
 			if err != nil {
 				return upload.Have{}, err
 			}
-			c := upload.Client{BaseURL: tn.BaseURL, Token: token}
+			c := upload.Client{BaseURL: baseURL, Token: token}
 			return c.Have(ctx, sourceID)
 		},
 		Running:  watch.NewGame(tn.Layout, nil).Running,
@@ -143,15 +149,72 @@ func run() error {
 	return a.runTray(ctx)
 }
 
-// installs returns the flavor folders to watch: the user's choice if it still
-// resolves, otherwise whatever is found in the standard locations.
-func (a *app) installs() []wowdir.Install {
-	if p := a.store.Get().WoWPath; p != "" {
-		if found, err := wowdir.Resolve(p, a.layout); err == nil {
-			return found
+func configuredWoWPaths(st store.State) []string {
+	paths := append([]string(nil), st.WoWPaths...)
+	if len(paths) == 0 && st.WoWPath != "" {
+		paths = []string{st.WoWPath}
+	}
+	return paths
+}
+
+func addWoWPath(st *store.State, path string) bool {
+	path = filepath.Clean(path)
+	paths := configuredWoWPaths(*st)
+	for _, existing := range paths {
+		if existing == path {
+			st.WoWPath = ""
+			st.WoWPaths = paths
+			return false
 		}
 	}
-	return wowdir.Detect(wowdir.StandardRoots(), a.layout)
+	st.WoWPath = ""
+	st.WoWPaths = append(paths, path)
+	return true
+}
+
+func removeWoWPath(st *store.State, path string) {
+	path = filepath.Clean(path)
+	paths := configuredWoWPaths(*st)
+	kept := paths[:0]
+	for _, existing := range paths {
+		if existing != path {
+			kept = append(kept, existing)
+		}
+	}
+	st.WoWPath = ""
+	st.WoWPaths = append([]string(nil), kept...)
+}
+
+// installs returns every configured WoW client. State from releases that only
+// supported one folder is treated as a one-element list. Auto-detection is used
+// only when the user has not configured any folders.
+func (a *app) installs() []wowdir.Install {
+	paths := configuredWoWPaths(a.store.Get())
+
+	var found []wowdir.Install
+	if len(paths) == 0 {
+		found = wowdir.Detect(wowdir.StandardRoots(), a.layout)
+	} else {
+		seen := map[string]bool{}
+		for _, path := range paths {
+			installs, err := wowdir.Resolve(path, a.layout)
+			if err != nil {
+				continue
+			}
+			for _, install := range installs {
+				if !seen[install.Dir] {
+					seen[install.Dir] = true
+					found = append(found, install)
+				}
+			}
+		}
+	}
+	if a.uploadOverride != "" {
+		for i := range found {
+			found[i].BaseURL = a.uploadOverride
+		}
+	}
+	return found
 }
 
 func envOr(key, fallback string) string {

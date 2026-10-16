@@ -31,6 +31,23 @@ func TestLedgerRoundTrip(t *testing.T) {
 	require.Equal(t, int64(10), again.Get().Logs["chr1-1-aa"].Size)
 }
 
+func TestWoWPathsRoundTripAndCopy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	require.NoError(t, s.Update(func(st *store.State) {
+		st.WoWPaths = []string{"/wow/capy", "/wow/warmane"}
+	}))
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"/wow/capy", "/wow/warmane"}, again.Get().WoWPaths)
+	copy := again.Get()
+	copy.WoWPaths[0] = "/changed"
+	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])
+}
+
 func TestCorruptStateStartsEmpty(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")

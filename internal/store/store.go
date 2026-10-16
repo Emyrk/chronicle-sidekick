@@ -23,8 +23,12 @@ type State struct {
 	// Tenant is the server chosen with --server or by pairing; empty means
 	// the default tenant.
 	Tenant tenant.Tenant `json:"tenant,omitempty"`
-	// WoWPath is the folder the user picked; empty means auto-detect.
+	// WoWPath is the single folder saved by older releases. It is read as a
+	// fallback and cleared the next time the folder list changes.
 	WoWPath string `json:"wow_path,omitempty"`
+	// WoWPaths are user-selected WoW folders. Multiple clients can be watched
+	// and routed independently by their realmlists.
+	WoWPaths []string `json:"wow_paths,omitempty"`
 	// KeepLog turns off renaming the combat log after it was uploaded. The
 	// zero value archives, which is the default.
 	KeepLog bool `json:"keep_log,omitempty"`
@@ -110,6 +114,7 @@ func (s *Store) Get() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := s.st
+	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
 	cp.Uploaded = make(map[string]int64, len(s.st.Uploaded))
 	for k, v := range s.st.Uploaded {
 		cp.Uploaded[k] = v

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,16 +59,16 @@ type Config struct {
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
-	// Upload sends size bytes of path under sourceID. fast asks for the
-	// cheapest compression; it is set while WoW is running so the game never
-	// competes for CPU.
-	Upload func(ctx context.Context, token, path, sourceID string, size int64, fast bool) (upload.Result, error)
-	// Lookup asks the server what it has of sourceID, before any body is sent.
+	// Upload sends size bytes of path to baseURL under sourceID. fast asks for
+	// the cheapest compression; it is set while WoW is running so the game
+	// never competes for CPU.
+	Upload func(ctx context.Context, token, baseURL, path, sourceID string, size int64, fast bool) (upload.Result, error)
+	// Lookup asks the selected tenant what it has of sourceID before a body is sent.
 	// It is only called for a log the ledger has never seen (fresh install,
 	// wiped state file, second machine). nil disables the pre-flight check: an
 	// unknown log is then uploaded and the server's duplicate answer recovers
 	// the report link.
-	Lookup func(ctx context.Context, token, sourceID string) (upload.Have, error)
+	Lookup func(ctx context.Context, token, baseURL, sourceID string) (upload.Have, error)
 	// Running reports whether WoW is running.
 	Running func(ctx context.Context, installDirs []string) bool
 	// Notify shows a native notification.
@@ -90,7 +92,7 @@ type Config struct {
 type Engine struct {
 	cfg     Config
 	tracker *watch.Tracker
-	manual  chan struct{}
+	manual  chan uploadRequest
 	wake    chan struct{}
 	dirty   atomic.Bool // token changed behind our back; re-read it
 
@@ -121,10 +123,16 @@ type Engine struct {
 	workerOnce    sync.Once
 }
 
+type uploadRequest struct {
+	// dirs is empty for every configured install.
+	dirs []string
+}
+
 // job is one log waiting to be (or being) uploaded.
 type job struct {
-	path string
-	size int64
+	path    string
+	size    int64
+	baseURL string
 }
 
 const uploadedStickiness = time.Minute
@@ -153,7 +161,7 @@ func New(cfg Config) *Engine {
 	return &Engine{
 		cfg:     cfg,
 		tracker: watch.NewTracker(st.Uploaded),
-		manual:  make(chan struct{}, 1),
+		manual:  make(chan uploadRequest, 1),
 		wake:    make(chan struct{}, 1),
 		kick:    make(chan struct{}, 1),
 		status:  Status{ReportURL: st.LastReportURL},
@@ -194,10 +202,21 @@ func pruneUploaded(s *store.Store, log *slog.Logger) store.State {
 	return s.Get()
 }
 
-// UploadNow is the only upload trigger. It asks for every log that has new data.
-func (e *Engine) UploadNow() {
+// UploadNow asks every configured WoW install for logs with new data.
+func (e *Engine) UploadNow() { e.requestUpload(nil) }
+
+// UploadNowFor asks only the installs rooted at dirs for logs with new data.
+func (e *Engine) UploadNowFor(dirs []string) {
+	if len(dirs) == 0 {
+		return
+	}
+	e.requestUpload(dirs)
+}
+
+func (e *Engine) requestUpload(dirs []string) {
+	req := uploadRequest{dirs: append([]string(nil), dirs...)}
 	select {
-	case e.manual <- struct{}{}:
+	case e.manual <- req:
 	default:
 	}
 }
@@ -217,31 +236,55 @@ func (e *Engine) TokenChanged() {
 func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(e.cfg.Poll)
 	defer tick.Stop()
-	manual := false
+	var manual *uploadRequest
 	for {
-		e.step(ctx, time.Now(), manual)
-		manual = false
+		e.stepSelected(ctx, time.Now(), manual)
+		manual = nil
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
 		case <-e.wake:
-		case <-e.manual:
-			manual = true
+		case req := <-e.manual:
+			manual = &req
 		}
 	}
 }
 
 func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
+	var req *uploadRequest
+	if manual {
+		req = &uploadRequest{}
+	}
+	e.stepSelected(ctx, now, req)
+}
+
+func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *uploadRequest) {
 	e.workerOnce.Do(func() { go e.worker(ctx) })
 	installs := e.cfg.Installs()
-	var logDirs, installDirs []string
-	for _, in := range installs {
-		logDirs = append(logDirs, in.LogDir)
+	var patterns, installDirs []string
+	for i := range installs {
+		in := &installs[i]
+		if len(in.LogGlobs) == 0 && in.LogDir != "" {
+			in.LogGlobs = []string{
+				filepath.Join(in.LogDir, watch.LiveLogName),
+				filepath.Join(in.LogDir, "WoWCombatLog-*.txt"),
+			}
+		}
+		patterns = append(patterns, in.LogGlobs...)
 		installDirs = append(installDirs, in.Dir)
 	}
 
-	files := watch.LogFiles(logDirs)
+	files := watch.Files(patterns)
+	destinations := make(map[string]string, len(files))
+	for _, f := range files {
+		for _, in := range installs {
+			if pathWithin(f.Path, in.Dir) {
+				destinations[f.Path] = in.BaseURL
+				break
+			}
+		}
+	}
 	running := e.cfg.Running(ctx, installDirs)
 	st := e.cfg.Store.Get()
 	// Uploads are user-triggered for now. IdleAfter is still used to decide
@@ -256,19 +299,38 @@ func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 			e.cfg.Logger.Info("watching", "file", f.Path)
 		}
 	}
+	var selectFile func(watch.File) bool
+	selectedFiles := len(files)
+	if manual != nil {
+		if len(manual.dirs) == 0 {
+			selectFile = func(watch.File) bool { return true }
+		} else {
+			selectedFiles = 0
+			selectFile = func(f watch.File) bool {
+				for _, dir := range manual.dirs {
+					if pathWithin(f.Path, dir) {
+						selectedFiles++
+						return true
+					}
+				}
+				return false
+			}
+		}
+	}
+
 	e.mu.Lock()
 	e.now = now
 	e.trackSession(now, running)
-	queue, recording := e.tracker.Observe(now, files, running, manual, trig)
+	queue, recording := e.tracker.ObserveSelected(now, files, running, selectFile, trig)
 	logging := running && e.tracker.CreatedSince(e.sessionStart)
 	if !st.KeepLog {
 		e.queueArchive(files, running)
 	}
 	e.mu.Unlock()
 
-	if manual && len(queue) == 0 {
+	if manual != nil && len(queue) == 0 {
 		msg := "Nothing new to upload."
-		if len(files) == 0 {
+		if selectedFiles == 0 {
 			msg = "No combat log yet. Type /combatlog in WoW to start one."
 		}
 		e.cfg.Notify("Chronicle", msg)
@@ -279,13 +341,21 @@ func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 	token := e.currentToken(now)
 	needAuth := token == "" || token == e.rejectedToken
 	if !needAuth {
-		e.enqueue(queue)
+		e.enqueue(queue, destinations)
 	}
 	if e.busy() {
 		return // the worker owns the status until it is done
 	}
 	rejected := token != "" && token == e.rejectedToken
 	e.setStatus(e.baseline(now, len(installs) > 0, running, recording, logging, needAuth, rejected))
+}
+
+func pathWithin(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // trackSession logs WoW starting and exiting and remembers how long it ran.
@@ -375,13 +445,14 @@ func (e *Engine) baseline(now time.Time, haveInstall, running, recording, loggin
 // enqueue hands queue to the worker. Observe keeps returning a file until the
 // worker marks it, so a file that is already queued (or in flight at the same
 // size) is skipped. Callers hold e.mu.
-func (e *Engine) enqueue(queue []watch.File) {
+func (e *Engine) enqueue(queue []watch.File, destinations map[string]string) {
 	for _, f := range queue {
+		baseURL := destinations[f.Path]
 		switch {
 		case e.current != nil && e.current.path == f.Path && e.current.size == f.Size:
-		case e.replacePending(f):
+		case e.replacePending(f, baseURL):
 		default:
-			e.pending = append(e.pending, job{path: f.Path, size: f.Size})
+			e.pending = append(e.pending, job{path: f.Path, size: f.Size, baseURL: baseURL})
 		}
 	}
 	if len(e.pending) > 0 {
@@ -448,10 +519,11 @@ func (e *Engine) archive() {
 }
 
 // replacePending refreshes the size of an already queued path. Callers hold e.mu.
-func (e *Engine) replacePending(f watch.File) bool {
+func (e *Engine) replacePending(f watch.File, baseURL string) bool {
 	for i := range e.pending {
 		if e.pending[i].path == f.Path {
 			e.pending[i].size = f.Size
+			e.pending[i].baseURL = baseURL
 			return true
 		}
 	}
@@ -519,7 +591,8 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 		// Without an id there is no ledger to consult; upload as before.
 		log.Debug("could not identify log", "err", err)
 	}
-	if src != "" && e.alreadyUploaded(ctx, log, j, src) {
+	ledgerID := sourceLedgerID(j.baseURL, src)
+	if src != "" && e.alreadyUploaded(ctx, log, j, src, ledgerID) {
 		return false
 	}
 	delay := e.cfg.RetryBase
@@ -536,11 +609,11 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 		e.setStatus(Status{State: StateUploading, Detail: "Uploading your log…", ReportURL: e.status.ReportURL})
 		e.mu.Unlock()
 
-		res, err := e.cfg.Upload(ctx, token, j.path, src, j.size, fast)
+		res, err := e.cfg.Upload(ctx, token, j.baseURL, j.path, src, j.size, fast)
 		var serverErr *upload.Error
 		switch {
 		case err == nil:
-			e.finish(j, src, res)
+			e.finish(j, ledgerID, res)
 			return false
 		case ctx.Err() != nil:
 			return false
@@ -574,15 +647,22 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 	}
 }
 
+func sourceLedgerID(baseURL, sourceID string) string {
+	if baseURL == "" || sourceID == "" {
+		return sourceID
+	}
+	return strings.TrimRight(baseURL, "/") + "|" + sourceID
+}
+
 // alreadyUploaded reports whether Chronicle already has j's bytes, recording
 // the skip when it does. The ledger answers first; a source id it has never
 // seen is asked of the server, when a pre-flight lookup is configured.
-func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, src string) bool {
-	if ent, ok := e.cfg.Store.Get().Logs[src]; ok {
+func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, src, ledgerID string) bool {
+	if ent, ok := e.cfg.Store.Get().Logs[ledgerID]; ok {
 		// A grown log (ent.Size < j.size) is sent again in full under the same
 		// source id, which is how the server replaces the group it parsed.
 		if ent.Size >= j.size {
-			e.skip(j, src, ent.Size, ent.ReportURL)
+			e.skip(j, ledgerID, ent.Size, ent.ReportURL)
 			return true
 		}
 		return false
@@ -593,7 +673,7 @@ func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, s
 	e.mu.Lock()
 	token := e.token
 	e.mu.Unlock()
-	have, err := e.cfg.Lookup(ctx, token, src)
+	have, err := e.cfg.Lookup(ctx, token, j.baseURL, src)
 	if err != nil {
 		// Offline, or a server without the route: upload and let its duplicate
 		// answer sort it out.
@@ -603,7 +683,7 @@ func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, s
 	if have.Size < j.size {
 		return false
 	}
-	e.skip(j, src, have.Size, have.ReportURL)
+	e.skip(j, ledgerID, have.Size, have.ReportURL)
 	return true
 }
 

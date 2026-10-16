@@ -57,6 +57,15 @@ func TestUpload(t *testing.T) {
 		require.Len(t, *body, size)
 	})
 
+	t.Run("tenant defaults need no parse query", func(t *testing.T) {
+		t.Parallel()
+		c, req, _ := respond(201, `{"log_id":"abc"}`)
+		c.Format, c.Flavor = "", ""
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.NoError(t, err)
+		require.Empty(t, req.URL.RawQuery)
+	})
+
 	t.Run("server provided url wins", func(t *testing.T) {
 		t.Parallel()
 		c, _, _ := respond(200, `{"log_id":"abc","url":"/logs/abc?x=1"}`)

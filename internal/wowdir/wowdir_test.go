@@ -69,3 +69,55 @@ func TestResolveNotFound(t *testing.T) {
 	_, err = wowdir.Resolve(filepath.Join(t.TempDir(), "nope"), tenant.DefaultLayout)
 	require.Error(t, err)
 }
+
+func TestResolveLegacyClients(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		realmlist  string
+		wantRealm  string
+		wantTenant string
+		localized  bool
+	}{
+		{name: "octo hostname", realmlist: `SET realmlist "play.octowow.st"`, wantRealm: "play.octowow.st", wantTenant: "https://octo.chronicleclassic.com"},
+		{name: "octo ip", realmlist: "set realmlist 185.165.170.6", wantRealm: "185.165.170.6", wantTenant: "https://octo.chronicleclassic.com"},
+		{name: "capy", realmlist: "set realmlist apac.capycraft.io", wantRealm: "apac.capycraft.io", wantTenant: "https://capy.chronicleclassic.com"},
+		{name: "vanilla plus", realmlist: "set realmlist logon.vanillaplus.org", wantRealm: "logon.vanillaplus.org", wantTenant: "https://vanillaplus.chronicleclassic.com"},
+		{name: "kronos", realmlist: "set realmlist login3.twinstar-wow.com", wantRealm: "login3.twinstar-wow.com", wantTenant: "https://kronos.chronicleclassic.com"},
+		{name: "moonwell", realmlist: "set realmlist login.moonwell.su", wantRealm: "login.moonwell.su", wantTenant: "https://moonwell.chronicleclassic.com"},
+		{name: "crusader storm", realmlist: "set realmlist crusader-storm.com", wantRealm: "crusader-storm.com", wantTenant: "https://crusader-storm.chronicleclassic.com"},
+		{name: "chromiecraft localized", realmlist: "set realmlist logon.chromiecraft.com", wantRealm: "logon.chromiecraft.com", wantTenant: "https://chromie.chronicleclassic.com", localized: true},
+		{name: "warmane with port", realmlist: "set realmlist logon.warmane.com:3724", wantRealm: "logon.warmane.com", wantTenant: "https://warmane.chronicleclassic.com", localized: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := filepath.Join(t.TempDir(), "WoW")
+			realmPath := filepath.Join(root, "realmlist.wtf")
+			if tt.localized {
+				realmPath = filepath.Join(root, "Data", "enUS", "realmlist.wtf")
+			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(realmPath), 0o755))
+			require.NoError(t, os.WriteFile(realmPath, []byte("# comment\n"+tt.realmlist+"\n"), 0o644))
+
+			got, err := wowdir.Resolve(root, tenant.DefaultLayout)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			require.Equal(t, tt.wantRealm, got[0].Realmlist)
+			require.Equal(t, tt.wantTenant, got[0].BaseURL)
+			require.Contains(t, got[0].LogGlobs, filepath.Join(root, "Logs", "WoWCombatLog.txt"))
+			require.Contains(t, got[0].LogGlobs, filepath.Join(root, "CustomData", "Chronicle_*.txt"))
+		})
+	}
+}
+
+func TestResolveRejectsUnknownRealm(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "realmlist.wtf"), []byte("set realmlist unknown.example\n"), 0o644))
+	_, err := wowdir.Resolve(root, tenant.DefaultLayout)
+	require.ErrorIs(t, err, wowdir.ErrUnsupportedRealm)
+	var unsupported *wowdir.UnsupportedRealmError
+	require.ErrorAs(t, err, &unsupported)
+	require.Equal(t, "unknown.example", unsupported.Host)
+}

@@ -143,7 +143,17 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 		_ = pw.CloseWithError(writeForm(mw, f, size, filepath.Base(path), c.Fast))
 	}()
 
-	endpoint := strings.TrimRight(c.BaseURL, "/") + uploadPath + "?" + url.Values{"format": {c.Format}, "flavor": {c.Flavor}}.Encode()
+	query := url.Values{}
+	if c.Format != "" {
+		query.Set("format", c.Format)
+	}
+	if c.Flavor != "" {
+		query.Set("flavor", c.Flavor)
+	}
+	endpoint := strings.TrimRight(c.BaseURL, "/") + uploadPath
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, pr)
 	if err != nil {
 		_ = pr.Close()
