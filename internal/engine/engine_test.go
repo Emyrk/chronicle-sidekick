@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
@@ -114,7 +115,10 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			}
 			return res, err
 		},
-		Running:   func(context.Context, []string) bool { h.mu.Lock(); defer h.mu.Unlock(); return h.running },
+		Running: func(context.Context, []string) bool { h.mu.Lock(); defer h.mu.Unlock(); return h.running },
+		AutoUpload: func() bool {
+			return h.st.Get().EffectiveConfig().AutoUpload.Enabled
+		},
 		Notify:    func(title, _ string) { h.notified = append(h.notified, title) },
 		OnStatus:  func(s engine.Status) { h.statuses = append(h.statuses, s) },
 		RetryBase: time.Millisecond,
@@ -196,6 +200,50 @@ func TestEngineUploadsOnlyOnManualRequest(t *testing.T) {
 	// Nothing more is sent without another request.
 	h.step(t, t0.Add(12*time.Minute), false)
 	require.Equal(t, 1, h.uploads)
+}
+
+func TestEngineAutoUploadUpdatesLiveAndWaitsForWoWExit(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	t0 := time.Now()
+	require.NoError(t, h.st.Update(func(s *store.State) {
+		s.KeepLog = true
+		s.Config = sidekick.SidekickConfig{
+			Version:    sidekick.CurrentConfigVersion,
+			AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+		}
+	}))
+
+	// Even a stable log is not automatically uploaded while WoW is running.
+	h.step(t, t0, false)
+	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat and more"), 0o644))
+	h.step(t, t0.Add(time.Minute), false)
+	h.step(t, t0.Add(10*time.Minute), false)
+	require.Equal(t, 0, h.uploads)
+
+	// Exiting WoW queues the stable log through the existing tracker.
+	h.mu.Lock()
+	h.running = false
+	h.mu.Unlock()
+	h.step(t, t0.Add(11*time.Minute), false)
+	require.Equal(t, 1, h.uploads)
+
+	// A server change takes effect without restarting the engine.
+	require.NoError(t, h.st.Update(func(s *store.State) {
+		s.Config.AutoUpload.Enabled = false
+	}))
+	require.NoError(t, os.WriteFile(h.logPath, []byte("new stable bytes"), 0o644))
+	h.step(t, t0.Add(12*time.Minute), false)
+	h.step(t, t0.Add(20*time.Minute), false)
+	require.Equal(t, 1, h.uploads)
+
+	require.NoError(t, h.st.Update(func(s *store.State) {
+		s.Config.AutoUpload.Enabled = true
+	}))
+	h.step(t, t0.Add(21*time.Minute), false)
+	require.Equal(t, 2, h.uploads)
+	h.step(t, t0.Add(30*time.Minute), false)
+	require.Equal(t, 2, h.uploads)
 }
 
 func TestEngineRetriesOfflineThenSucceeds(t *testing.T) {

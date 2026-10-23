@@ -67,6 +67,67 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev").WoWDirectories, maxStatusWoWDirectories)
 }
 
+func TestReconcileConfigPersistsMismatch(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.Open(path)
+	require.NoError(t, err)
+	cfg := sidekick.SidekickConfig{
+		Version:    sidekick.CurrentConfigVersion,
+		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+	}
+
+	hash, err := sidekick.HashConfig(cfg)
+	require.NoError(t, err)
+	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: hash, Config: &cfg})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.Equal(t, hash, again.Get().EffectiveConfigHash())
+	require.True(t, again.Get().EffectiveConfig().AutoUpload.Enabled)
+}
+
+func TestReconcileConfigToleratesAbsentConfig(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+
+	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "desired"})
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+}
+
+func TestReconcileConfigRejectsUnknownVersion(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+	cfg := sidekick.SidekickConfig{Version: sidekick.CurrentConfigVersion + 1}
+
+	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "future", Config: &cfg})
+	require.ErrorContains(t, err, "unsupported Sidekick config version")
+	require.False(t, changed)
+	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+}
+
+func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+	cfg := sidekick.SidekickConfig{
+		Version:    sidekick.CurrentConfigVersion,
+		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+	}
+
+	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "wrong", Config: &cfg})
+	require.ErrorContains(t, err, "config hash mismatch")
+	require.False(t, changed)
+	require.False(t, st.Get().EffectiveConfig().AutoUpload.Enabled)
+	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+}
+
 func TestWoWFolderErrorIsActionable(t *testing.T) {
 	t.Parallel()
 	title, message := wowFolderError(&wowdir.UnsupportedRealmError{Host: "logon.example.test"})

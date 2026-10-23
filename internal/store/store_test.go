@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 )
 
@@ -46,6 +47,36 @@ func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	copy := again.Get()
 	copy.WoWPaths[0] = "/changed"
 	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])
+}
+
+func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"keep_log":true}`), 0o600))
+
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	require.False(t, s.Get().EffectiveConfig().AutoUpload.Enabled)
+	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", s.Get().EffectiveConfigHash())
+}
+
+func TestManagedConfigRoundTrip(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	cfg := sidekick.SidekickConfig{
+		Version:    sidekick.CurrentConfigVersion,
+		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+	}
+	require.NoError(t, s.Update(func(st *store.State) {
+		st.Config = cfg
+	}))
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.Equal(t, cfg, again.Get().EffectiveConfig())
+	require.Equal(t, "5adfecf0ef27760f25242db79e5b41cd0b676794a2caacd2b11fb7dd88a55169", again.Get().EffectiveConfigHash())
 }
 
 func TestCorruptStateStartsEmpty(t *testing.T) {

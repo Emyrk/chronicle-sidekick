@@ -147,7 +147,10 @@ func run() error {
 			c := upload.Client{BaseURL: baseURL, Token: token}
 			return c.Have(ctx, sourceID)
 		},
-		Running:  watch.NewGame(tn.Layout, nil).Running,
+		Running: watch.NewGame(tn.Layout, nil).Running,
+		AutoUpload: func() bool {
+			return st.Get().EffectiveConfig().AutoUpload.Enabled
+		},
 		Notify:   notify,
 		OnStatus: a.onStatus,
 		Logger:   logger,
