@@ -71,9 +71,6 @@ type Config struct {
 	Lookup func(ctx context.Context, token, baseURL, sourceID string) (upload.Have, error)
 	// Running reports whether WoW is running.
 	Running func(ctx context.Context, installDirs []string) bool
-	// AutoUpload reads the effective server-managed setting on every poll so a
-	// heartbeat can change behavior without restarting Sidekick. nil disables it.
-	AutoUpload func() bool
 	// Notify shows a native notification.
 	Notify func(title, message string)
 	// OnStatus is called when the status changes.
@@ -290,10 +287,9 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	}
 	running := e.cfg.Running(ctx, installDirs)
 	st := e.cfg.Store.Get()
-	autoUpload := e.cfg.AutoUpload != nil && e.cfg.AutoUpload()
-	// Automatic uploads use the existing exit and stability triggers, but the
-	// queue is only handed to the worker after WoW is no longer running.
-	trig := watch.Trigger{OnExit: autoUpload, OnIdle: autoUpload && !running, IdleAfter: e.cfg.IdleAfter}
+	// Uploads are user-triggered for now. IdleAfter is still used to decide
+	// whether the tray should say the combat log is actively recording.
+	trig := watch.Trigger{IdleAfter: e.cfg.IdleAfter}
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {

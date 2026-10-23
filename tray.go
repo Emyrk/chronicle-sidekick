@@ -197,7 +197,7 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 		return
 	}
 	if changed {
-		a.logger.Info("applied Sidekick config", "config_hash", response.ConfigHash, "auto_upload", response.Config.AutoUpload.Enabled)
+		a.logger.Info("synced Sidekick config", "config_hash", response.ConfigHash)
 	}
 }
 
