@@ -185,9 +185,45 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	client := sidekick.Client{BaseURL: a.server, Token: token}
 	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version)
-	if err := client.Update(ctx, status); err != nil {
+	status.ConfigHash = a.store.Get().EffectiveConfigHash()
+	response, err := client.Update(ctx, status)
+	if err != nil {
 		a.logger.Warn("Sidekick status update", "err", err)
+		return
 	}
+	changed, err := reconcileConfig(a.store, response)
+	if err != nil {
+		a.logger.Warn("apply Sidekick config", "err", err)
+		return
+	}
+	if changed {
+		a.logger.Info("synced Sidekick config", "config_hash", response.ConfigHash)
+	}
+}
+
+func reconcileConfig(st *store.Store, response sidekick.UpdateResponse) (bool, error) {
+	if response.ConfigHash == st.Get().EffectiveConfigHash() || response.Config == nil {
+		return false, nil
+	}
+	if response.ConfigHash == "" {
+		return false, errors.New("Sidekick config response has no config hash")
+	}
+	if err := response.Config.Validate(); err != nil {
+		return false, err
+	}
+	computedHash, err := sidekick.HashConfig(*response.Config)
+	if err != nil {
+		return false, fmt.Errorf("hash Sidekick config: %w", err)
+	}
+	if computedHash != response.ConfigHash {
+		return false, fmt.Errorf("Sidekick config hash mismatch: computed %s, response has %s", computedHash, response.ConfigHash)
+	}
+	if err := st.Update(func(s *store.State) {
+		s.Config = *response.Config
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // checkUpdate looks for a newer release once at launch and, if there is one,

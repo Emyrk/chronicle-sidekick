@@ -12,6 +12,7 @@ import (
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
 
@@ -35,6 +36,8 @@ type State struct {
 	// KeepLog turns off renaming the combat log after it was uploaded. The
 	// zero value archives, which is the default.
 	KeepLog bool `json:"keep_log,omitempty"`
+	// Config is the last valid server-managed config applied by Sidekick.
+	Config sidekick.SidekickConfig `json:"config,omitempty"`
 	// Uploaded maps a log path to the size that has been uploaded.
 	Uploaded map[string]int64 `json:"uploaded,omitempty"`
 	// Logs is the upload ledger: it maps a log's content-keyed source id
@@ -44,6 +47,24 @@ type State struct {
 	Logs map[string]Log `json:"logs,omitempty"`
 	// LastReportURL is the most recent report, for the tray menu.
 	LastReportURL string `json:"last_report_url,omitempty"`
+}
+
+// EffectiveConfig returns the valid config currently applied. Older state files
+// have no config, so they use the disabled default.
+func (s State) EffectiveConfig() sidekick.SidekickConfig {
+	if s.Config.Validate() == nil {
+		return s.Config
+	}
+	return sidekick.DefaultConfig()
+}
+
+// EffectiveConfigHash computes the hash of the config currently applied.
+func (s State) EffectiveConfigHash() string {
+	hash, err := sidekick.HashConfig(s.EffectiveConfig())
+	if err != nil {
+		return ""
+	}
+	return hash
 }
 
 // Log is one entry of the upload ledger.
