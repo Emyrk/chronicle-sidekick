@@ -41,8 +41,10 @@ type app struct {
 	items  menuItems
 	ready  bool
 
-	updateLink string
-	pairing    bool   // a pairing is in flight
+	updateLink    string
+	updateVersion string
+	updating      bool
+	pairing       bool   // a pairing is in flight
 	pairCode   string // device code shown while the pairing is waiting
 	pairMsg    string // last pairing outcome, shown until the next attempt
 
@@ -89,6 +91,11 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.disconnect.Hide()
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
+	if nativeUpdaterAvailable() {
+		a.items.update.SetTitle("Check for updates…")
+		a.items.update.Show()
+		startNativeUpdater()
+	}
 	systray.AddSeparator()
 	a.items.wows = systray.AddMenuItem("World of Warcraft folders", "Configured World of Warcraft installations")
 	a.items.wowFolders = map[string]wowMenuEntry{}
@@ -130,7 +137,11 @@ func (a *app) onReady(ctx context.Context) {
 			case <-a.items.disconnect.ClickedCh:
 				go a.disconnect(ctx)
 			case <-a.items.update.ClickedCh:
-				openURL(a.updateURL())
+				if nativeUpdaterAvailable() {
+					checkNativeUpdater()
+				} else {
+					go a.installUpdate(ctx)
+				}
 			case <-choose.ClickedCh:
 				a.chooseFolder(ctx)
 			case <-clearFolders.ClickedCh:
@@ -231,6 +242,9 @@ func reconcileConfig(st *store.Store, response sidekick.UpdateResponse) (bool, e
 // checkUpdate checks at launch and then once a day. Later checks are
 // conditional GETs, so an unchanged release list costs one tiny request.
 func (a *app) checkUpdate(ctx context.Context) {
+	if nativeUpdaterAvailable() {
+		return
+	}
 	checker := &update.Checker{Client: http.DefaultClient, URL: update.DefaultURL}
 	t := time.NewTicker(24 * time.Hour)
 	defer t.Stop()
@@ -255,8 +269,9 @@ func (a *app) checkUpdateOnce(ctx context.Context, checker *update.Checker) {
 	}
 	a.mu.Lock()
 	a.updateLink = rel.URL
+	a.updateVersion = rel.Version
 	a.mu.Unlock()
-	a.items.update.SetTitle("Update available: v" + rel.Version)
+	a.items.update.SetTitle("Install and restart: v" + rel.Version)
 	a.items.update.Show()
 }
 
@@ -264,6 +279,50 @@ func (a *app) updateURL() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.updateLink
+}
+
+func (a *app) installUpdate(ctx context.Context) {
+	a.mu.Lock()
+	if a.updating {
+		a.mu.Unlock()
+		return
+	}
+	a.updating = true
+	wanted := a.updateVersion
+	a.mu.Unlock()
+
+	a.items.update.Disable()
+	if wanted != "" {
+		a.items.update.SetTitle("Installing v" + wanted + "…")
+	} else {
+		a.items.update.SetTitle("Installing update…")
+	}
+
+	installer, err := update.NewInstaller()
+	if err == nil {
+		_, err = installer.InstallLatest(ctx, version)
+	}
+	if err == nil {
+		err = restartSidekick()
+	}
+	if err != nil {
+		a.logger.Warn("install update", "err", err)
+		notify("Chronicle Sidekick", "The update could not be installed. Open the release page to update manually.")
+		a.mu.Lock()
+		a.updating = false
+		a.mu.Unlock()
+		if wanted != "" {
+			a.items.update.SetTitle("Install and restart: v" + wanted)
+		} else {
+			a.items.update.SetTitle("Update available")
+		}
+		a.items.update.Enable()
+		if page := a.updateURL(); page != "" {
+			openURL(page)
+		}
+		return
+	}
+	a.cancel()
 }
 
 func (a *app) toggle(item *systray.MenuItem, on bool) {

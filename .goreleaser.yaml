@@ -18,7 +18,7 @@ builds:
     main: .
     binary: chronicle-sidekick
     goos: [windows]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     # windowsgui: no console window behind the tray icon.
     ldflags: ["-s -w -H=windowsgui -X main.version={{ .Version }}"]
@@ -26,7 +26,7 @@ builds:
     main: .
     binary: chronicle-sidekick
     goos: [linux]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     ldflags: ["-s -w -X main.version={{ .Version }}"]
 
@@ -42,11 +42,11 @@ archives:
   - id: windows
     ids: [windows]
     formats: [binary]
-    name_template: Chronicle-Sidekick-windows-amd64
+    name_template: Chronicle-Sidekick-{{ .Os }}-{{ .Arch }}
   - id: linux
     ids: [linux]
     formats: [tar.gz]
-    name_template: Chronicle-Sidekick-linux-amd64
+    name_template: Chronicle-Sidekick-{{ .Os }}-{{ .Arch }}
     files: [none*]
 
 # checksums.txt is written by the workflow after every asset exists: the macOS
