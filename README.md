@@ -22,15 +22,35 @@ go test ./...
 go build ./...
 ```
 
-The macOS build requires the Xcode command-line tools because its tray integration uses cgo. Windows and Linux builds use `CGO_ENABLED=0`.
+The macOS build requires the Xcode command-line tools and the pinned Sparkle framework because its tray integration uses cgo:
+
+```sh
+sparkle_dir="$(scripts/setup-sparkle.sh)"
+SPARKLE_DIR="$sparkle_dir" \
+  CGO_CFLAGS="-F$sparkle_dir" \
+  CGO_LDFLAGS="-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks" \
+  go build .
+```
+
+Windows and Linux builds use `CGO_ENABLED=0`.
 
 ## Releases
 
 Push a semantic version tag such as `v0.1.0`. GitHub Actions runs the tests and platform build checks first, then creates or updates the matching GitHub Release with:
 
-- a universal macOS `.app` zip,
-- a Windows amd64 executable,
-- a Linux amd64 tarball,
-- SHA-256 checksums for every download.
+- an ad-hoc-signed universal macOS `.app` zip with Sparkle,
+- Windows amd64 and arm64 executables,
+- Linux amd64 and arm64 tarballs,
+- SHA-256 checksums and a project-owned ECDSA signature,
+- a Sparkle appcast whose macOS archive is signed with Sparkle EdDSA.
 
-The release builds are currently unsigned. You can also run the workflow manually to produce the same files as a temporary Actions artifact without creating a GitHub Release.
+Windows and Linux verify the signed checksum file before replacing the executable, then restart Sidekick. macOS uses Sparkle to verify, install, and relaunch the complete app bundle. The first Sparkle-enabled release must still be installed manually because older releases do not contain Sparkle. The macOS bundle is not notarized and has no Apple Developer ID, so Gatekeeper may still warn on the first manual installation.
+
+### Project-owned update keys
+
+Production packaging fails closed unless these GitHub Actions secrets exist:
+
+- `UPDATE_SIGNING_KEY`: the PEM ECDSA private key corresponding to `internal/update/update-signing-cert.pem`.
+- `SPARKLE_PRIVATE_ED_KEY`: the base64-encoded 32-byte Ed25519 seed corresponding to `packaging/sparkle-public-key.txt`.
+
+The public Sparkle key is intentionally committed because clients need it to authenticate updates. Store both private keys outside the repository and add them directly to GitHub Actions secrets. Losing either private key prevents existing installations from authenticating normal key rotations, so keep encrypted offline backups. Manual workflow builds use the same project-owned keys but do not publish a release.

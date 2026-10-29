@@ -5,8 +5,8 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  # Cut an unsigned build from any branch without tagging: Actions > Sidekick
-  # Build > Run workflow. The assets are attached to the run as an artifact.
+  # Cut a signed development build from any branch without tagging: Actions >
+  # Sidekick Build > Run workflow. The assets are attached to the run.
   workflow_dispatch:
 
 permissions:
@@ -49,7 +49,9 @@ jobs:
       matrix:
         include:
           - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -77,6 +79,14 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Set up Sparkle
+        run: |
+          sparkle_dir="$(scripts/setup-sparkle.sh)"
+          {
+            echo "SPARKLE_DIR=$sparkle_dir"
+            echo "CGO_CFLAGS=-F$sparkle_dir"
+            echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks"
+          } >> "$GITHUB_ENV"
       - name: Build
         env:
           GOOS: darwin
@@ -88,6 +98,7 @@ jobs:
         if: matrix.goarch == 'arm64'
         env:
           CGO_ENABLED: '1'
+          DYLD_FRAMEWORK_PATH: ${{ env.SPARKLE_DIR }}
         run: go test -race -count=1 ./...
 
   # Packages macOS (universal .app in a .zip), Windows and Linux. Runs on
@@ -100,6 +111,9 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: write
+    env:
+      SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -108,6 +122,21 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Require project-owned update keys
+        run: |
+          test -s packaging/sparkle-public-key.txt
+          test -n "$UPDATE_SIGNING_KEY"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test -n "$SPARKLE_PRIVATE_ED_KEY"
+          fi
+      - name: Set up Sparkle
+        run: |
+          sparkle_dir="$(scripts/setup-sparkle.sh)"
+          {
+            echo "SPARKLE_DIR=$sparkle_dir"
+            echo "CGO_CFLAGS=-F$sparkle_dir"
+            echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks"
+          } >> "$GITHUB_ENV"
       - name: Tag manual build for GoReleaser
         if: github.event_name == 'workflow_dispatch'
         run: git tag "v0.0.0-dev.${GITHUB_RUN_NUMBER}"
@@ -115,14 +144,42 @@ jobs:
         with:
           version: '~> v2'
           args: release --clean --skip=publish --config .goreleaser.yaml
-      - name: Collect assets and checksum
-        # The windows "binary" archive is not a file in dist/ under its release
-        # name, so copy it there; then checksum every shipped file.
+      - name: Collect and authenticate assets
         run: |
-          cp "$(find dist -name chronicle-sidekick.exe -print -quit)" dist/Chronicle-Sidekick-windows-amd64.exe
+          for arch in amd64 arm64; do
+            source="$(find dist -path "*windows_${arch}*" -name chronicle-sidekick.exe -print -quit)"
+            test -n "$source"
+            cp "$source" "dist/Chronicle-Sidekick-windows-${arch}.exe"
+          done
           cd dist
-          shasum -a 256 Chronicle-Sidekick-macos.zip Chronicle-Sidekick-windows-amd64.exe Chronicle-Sidekick-linux-amd64.tar.gz > checksums.txt
+          assets=(
+            Chronicle-Sidekick-macos.zip
+            Chronicle-Sidekick-windows-amd64.exe
+            Chronicle-Sidekick-windows-arm64.exe
+            Chronicle-Sidekick-linux-amd64.tar.gz
+            Chronicle-Sidekick-linux-arm64.tar.gz
+          )
+          shasum -a 256 "${assets[@]}" > checksums.txt
           shasum -a 256 -c checksums.txt
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf '%s' "$UPDATE_SIGNING_KEY" > "$key_file"
+          openssl dgst -sha256 -sign "$key_file" -out checksums.txt.sig checksums.txt
+          openssl dgst -sha256 -verify <(openssl x509 -in ../internal/update/update-signing-cert.pem -pubkey -noout) \
+            -signature checksums.txt.sig checksums.txt
+      - name: Generate signed Sparkle appcast
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          appcast_dir="$(mktemp -d)"
+          trap 'rm -rf "$appcast_dir"' EXIT
+          cp dist/Chronicle-Sidekick-macos.zip "$appcast_dir/"
+          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | \
+            "$SPARKLE_DIR/bin/generate_appcast" \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/Emyrk/chronicle-sidekick/releases/download/$GITHUB_REF_NAME/" \
+              "$appcast_dir"
+          cp "$appcast_dir/appcast.xml" dist/appcast.xml
       - uses: actions/upload-artifact@v7
         with:
           name: chronicle-sidekick
@@ -130,8 +187,12 @@ jobs:
           path: |
             dist/Chronicle-Sidekick-macos.zip
             dist/Chronicle-Sidekick-windows-amd64.exe
+            dist/Chronicle-Sidekick-windows-arm64.exe
             dist/Chronicle-Sidekick-linux-amd64.tar.gz
+            dist/Chronicle-Sidekick-linux-arm64.tar.gz
             dist/checksums.txt
+            dist/checksums.txt.sig
+            dist/appcast.xml
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -140,8 +201,12 @@ jobs:
           assets=(
             dist/Chronicle-Sidekick-macos.zip
             dist/Chronicle-Sidekick-windows-amd64.exe
+            dist/Chronicle-Sidekick-windows-arm64.exe
             dist/Chronicle-Sidekick-linux-amd64.tar.gz
+            dist/Chronicle-Sidekick-linux-arm64.tar.gz
             dist/checksums.txt
+            dist/checksums.txt.sig
+            dist/appcast.xml
           )
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
