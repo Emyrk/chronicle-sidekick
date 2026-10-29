@@ -82,8 +82,11 @@ jobs:
       - name: Set up Sparkle
         run: |
           sparkle_dir="$(scripts/setup-sparkle.sh)"
-          echo "SPARKLE_DIR=$sparkle_dir" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks" >> "$GITHUB_ENV"
+          {
+            echo "SPARKLE_DIR=$sparkle_dir"
+            echo "CGO_CFLAGS=-F$sparkle_dir"
+            echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks"
+          } >> "$GITHUB_ENV"
       - name: Build
         env:
           GOOS: darwin
@@ -129,8 +132,11 @@ jobs:
       - name: Set up Sparkle
         run: |
           sparkle_dir="$(scripts/setup-sparkle.sh)"
-          echo "SPARKLE_DIR=$sparkle_dir" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks" >> "$GITHUB_ENV"
+          {
+            echo "SPARKLE_DIR=$sparkle_dir"
+            echo "CGO_CFLAGS=-F$sparkle_dir"
+            echo "CGO_LDFLAGS=-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks"
+          } >> "$GITHUB_ENV"
       - name: Tag manual build for GoReleaser
         if: github.event_name == 'workflow_dispatch'
         run: git tag "v0.0.0-dev.${GITHUB_RUN_NUMBER}"

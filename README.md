@@ -27,6 +27,7 @@ The macOS build requires the Xcode command-line tools and the pinned Sparkle fra
 ```sh
 sparkle_dir="$(scripts/setup-sparkle.sh)"
 SPARKLE_DIR="$sparkle_dir" \
+  CGO_CFLAGS="-F$sparkle_dir" \
   CGO_LDFLAGS="-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks" \
   go build .
 ```
