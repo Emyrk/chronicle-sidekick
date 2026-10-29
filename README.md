@@ -22,7 +22,16 @@ go test ./...
 go build ./...
 ```
 
-The macOS build requires the Xcode command-line tools and the pinned Sparkle framework because its tray integration uses cgo. Run `scripts/setup-sparkle.sh`, then build with `SPARKLE_DIR` set to the printed directory and `CGO_LDFLAGS=-F$SPARKLE_DIR`. Windows and Linux builds use `CGO_ENABLED=0`.
+The macOS build requires the Xcode command-line tools and the pinned Sparkle framework because its tray integration uses cgo:
+
+```sh
+sparkle_dir="$(scripts/setup-sparkle.sh)"
+SPARKLE_DIR="$sparkle_dir" \
+  CGO_LDFLAGS="-F$sparkle_dir -Wl,-rpath,@executable_path/../Frameworks" \
+  go build .
+```
+
+Windows and Linux builds use `CGO_ENABLED=0`.
 
 ## Releases
 

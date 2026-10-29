@@ -4,7 +4,7 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework Cocoa -framework Sparkle -Wl,-rpath,@executable_path/../Frameworks
+#cgo LDFLAGS: -framework Cocoa -framework Sparkle
 void SidekickStartUpdater(void);
 void SidekickCheckForUpdates(void);
 */
