@@ -60,11 +60,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, upload, wows, report, connect, disconnect, update *systray.MenuItem
-	wowFolders                                                map[string]wowMenuEntry
-	uploadEntries                                             []wowMenuEntry
-	uploadDirs                                                []string
-	uploadCount                                               int
+	status, upload, wows, report, connect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                             map[string]wowMenuEntry
+	uploadEntries                                                          []wowMenuEntry
+	uploadDirs                                                             []string
+	uploadCount                                                            int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -92,7 +92,9 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.disconnect.Hide()
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
+	a.items.forceUpdate = systray.AddMenuItem("Force update now…", "Download, verify, and reinstall the latest release")
 	if nativeUpdaterAvailable() {
+		a.items.forceUpdate.Hide()
 		a.items.update.SetTitle("Check for updates…")
 		a.items.update.Show()
 		startNativeUpdater()
@@ -141,8 +143,10 @@ func (a *app) onReady(ctx context.Context) {
 				if nativeUpdaterAvailable() {
 					checkNativeUpdater()
 				} else {
-					go a.installUpdate(ctx)
+					go a.installUpdate(ctx, false)
 				}
+			case <-a.items.forceUpdate.ClickedCh:
+				go a.installUpdate(ctx, true)
 			case <-choose.ClickedCh:
 				a.chooseFolder(ctx)
 			case <-clearFolders.ClickedCh:
@@ -282,7 +286,7 @@ func (a *app) updateURL() string {
 	return a.updateLink
 }
 
-func (a *app) installUpdate(ctx context.Context) {
+func (a *app) installUpdate(ctx context.Context, force bool) {
 	a.mu.Lock()
 	if a.updating {
 		a.mu.Unlock()
@@ -293,6 +297,10 @@ func (a *app) installUpdate(ctx context.Context) {
 	a.mu.Unlock()
 
 	a.items.update.Disable()
+	a.items.forceUpdate.Disable()
+	if force {
+		a.items.forceUpdate.SetTitle("Installing latest release…")
+	}
 	if wanted != "" {
 		a.items.update.SetTitle("Installing v" + wanted + "…")
 	} else {
@@ -301,7 +309,7 @@ func (a *app) installUpdate(ctx context.Context) {
 
 	installer, err := update.NewInstaller()
 	if err == nil {
-		_, err = installer.InstallLatest(ctx, version)
+		_, err = installer.InstallLatest(ctx, version, force)
 	}
 	if err == nil {
 		err = restartSidekick()
@@ -318,6 +326,8 @@ func (a *app) installUpdate(ctx context.Context) {
 			a.items.update.SetTitle("Update available")
 		}
 		a.items.update.Enable()
+		a.items.forceUpdate.SetTitle("Force update now…")
+		a.items.forceUpdate.Enable()
 		if page := a.updateURL(); page != "" {
 			openURL(page)
 		}
