@@ -86,10 +86,17 @@ The SavedVariables source is:
 ```
 
 Sidekick sends `sidekick_storage` on both initial uploads and append requests.
-Chronicle's `upload-v2` handler already accepts this field. The append handler
-must be extended to decode and attach the optional artifact to the existing log
-group using the same validation and size limit as `upload-v2`; otherwise the
-extra multipart field will be ignored.
+Chronicle's `upload-v2` handler accepts the base artifact, and Chronicle PR
+#1481 (`Support positional artifacts on appended logs`) added the same optional
+field to `/logs/<log_id>/append`. Each appended artifact is associated with its
+specific log-file part, allowing the parser to consume telemetry in append order.
+
+When Sidekick archives an upload, it moves the selected
+`ChronicleSidekickBridgeWoTLK.lua` into the managed group directory rather than
+copying it. The original SavedVariables file is therefore removed after it is
+captured, and WoW/addon code can create a fresh file for subsequent telemetry.
+If the move fails, Sidekick leaves the source in place and uploads the combat log
+without the optional artifact.
 
 Successful initial and append responses must continue returning:
 

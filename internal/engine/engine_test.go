@@ -541,6 +541,8 @@ func TestEngineSnapshotsNewestSidecar(t *testing.T) {
 	require.FileExists(t, storage)
 	body, err := os.ReadFile(storage)
 	require.NoError(t, err)
+	require.NoFileExists(t, newPath)
+	require.FileExists(t, oldPath)
 	require.Equal(t, "new", string(body))
 	require.Equal(t, filepath.Dir(h.uploadRequests[0].Path), filepath.Dir(storage))
 }

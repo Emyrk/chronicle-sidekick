@@ -727,6 +727,14 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	}
 	combatPath := archiveCombatPath(dir, j.queuedAt)
 	group.Files = append(group.Files, combatPath)
+	sidecarSource, sidecarErr := newestSidecarPath(j.install.Dir)
+	storagePath := ""
+	if sidecarErr != nil {
+		e.cfg.Logger.Warn("finding optional Sidekick storage", "err", sidecarErr)
+	} else if sidecarSource != "" {
+		storagePath = filepath.Join(dir, filepath.Base(sidecarSource))
+		group.Files = append(group.Files, storagePath)
+	}
 	if err := e.cfg.Store.Update(func(s *store.State) {
 		if s.ArchiveGroups == nil {
 			s.ArchiveGroups = map[string]store.ArchiveGroup{}
@@ -765,18 +773,10 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 		e.mu.Unlock()
 	}
 
-	storagePath, err := snapshotNewestSidecar(j.install.Dir, dir)
-	if err != nil {
-		e.cfg.Logger.Warn("snapshotting optional Sidekick storage", "err", err)
-		storagePath = ""
-	}
-	if storagePath != "" {
-		if err := e.cfg.Store.Update(func(s *store.State) {
-			g := s.ArchiveGroups[group.ID]
-			g.Files = append(g.Files, storagePath)
-			s.ArchiveGroups[group.ID] = g
-		}); err != nil {
-			return fmt.Errorf("persist Sidekick storage archive: %w", err)
+	if sidecarSource != "" {
+		if err := os.Rename(sidecarSource, storagePath); err != nil {
+			e.cfg.Logger.Warn("moving optional Sidekick storage into archive", "file", sidecarSource, "err", err)
+			storagePath = ""
 		}
 	}
 	j.snapshotPath = combatPath
@@ -849,27 +849,26 @@ func copySnapshot(from, to string, size int64) error {
 	return nil
 }
 
-func snapshotNewestSidecar(wowDir, archiveDir string) (string, error) {
+func newestSidecarPath(wowDir string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(wowDir, "WTF", "Account", "*", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua"))
 	if err != nil || len(matches) == 0 {
 		return "", err
 	}
-	newest := matches[0]
-	newestInfo, err := os.Stat(newest)
-	if err != nil {
-		return "", err
-	}
-	for _, path := range matches[1:] {
+	var newest string
+	var newestInfo os.FileInfo
+	for _, path := range matches {
 		info, statErr := os.Stat(path)
-		if statErr == nil && info.ModTime().After(newestInfo.ModTime()) {
+		if statErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestInfo.ModTime()) {
 			newest, newestInfo = path, info
 		}
 	}
-	to := filepath.Join(archiveDir, filepath.Base(newest))
-	if err := copySnapshot(newest, to, newestInfo.Size()); err != nil {
-		return "", fmt.Errorf("copy sidekick storage snapshot: %w", err)
+	if newest == "" {
+		return "", errors.New("no regular Sidekick storage file found")
 	}
-	return to, nil
+	return newest, nil
 }
 
 // uploadOne sends one log, retrying as the failure allows. It returns true when
