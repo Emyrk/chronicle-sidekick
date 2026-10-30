@@ -378,6 +378,18 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	e.setStatus(e.baseline(now, len(installs) > 0, running, recording, logging, needAuth, rejected))
 }
 
+// currentDestination re-reads the configured installs immediately before an
+// upload starts. Legacy installs derive BaseURL from realmlist.wtf, so a realm
+// change made after the job was queued is honored without restarting Sidekick.
+func (e *Engine) currentDestination(path string) (string, bool) {
+	for _, install := range e.cfg.Installs() {
+		if pathWithin(path, install.Dir) {
+			return install.BaseURL, true
+		}
+	}
+	return "", false
+}
+
 func pathWithin(path, dir string) bool {
 	if dir == "" {
 		return false
@@ -614,6 +626,15 @@ func (e *Engine) worker(ctx context.Context) {
 // and then marked failed. Any other 4xx fails at once.
 func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 	log := e.cfg.Logger.With("file", j.path, "size", j.size)
+	baseURL, ok := e.currentDestination(j.path)
+	if !ok {
+		err := fmt.Errorf("cannot determine the Chronicle tenant; check this WoW folder's realmlist.wtf")
+		log.Error("refreshing upload destination", "err", err)
+		e.fail(j, err)
+		return false
+	}
+	j.baseURL = baseURL
+
 	src, err := upload.Identify(j.path)
 	if err != nil {
 		// Without an id there is no ledger to consult; upload as before.

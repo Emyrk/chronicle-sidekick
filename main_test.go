@@ -354,6 +354,27 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.Equal(t, "https://warmane.chronicleclassic.com", got[1].BaseURL)
 }
 
+func TestInstallsRereadsChangedRealmlist(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := fakeLegacyInstall(t, root, "Swappable", "apac.capycraft.io")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{dir}
+		s.WoWPathsSet = true
+	}))
+	a := &app{store: st, layout: tenant.DefaultLayout}
+
+	require.Equal(t, "https://capy.chronicleclassic.com", a.installs()[0].BaseURL)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "realmlist.wtf"),
+		[]byte("set realmlist logon.warmane.com\n"),
+		0o644,
+	))
+	require.Equal(t, "https://warmane.chronicleclassic.com", a.installs()[0].BaseURL)
+}
+
 func TestInstallsDeduplicatesConfiguredPathAliases(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

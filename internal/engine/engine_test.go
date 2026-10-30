@@ -38,6 +38,7 @@ type harness struct {
 	fast            []bool   // the fast flag of each Upload call
 	baseURL         string   // tenant URL returned with the test install
 	installs        []wowdir.Install
+	installsFn      func() []wowdir.Install
 	autoUpload      func(wowdir.Install) watch.Trigger
 	uploadPaths     []string
 	lookups         int           // pre-flight source lookups made
@@ -83,6 +84,9 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 		Store:  st,
 		Logger: logger,
 		Installs: func() []wowdir.Install {
+			if h.installsFn != nil {
+				return h.installsFn()
+			}
 			if h.installs != nil {
 				return h.installs
 			}
@@ -155,6 +159,26 @@ func TestEngineRoutesUploadToInstallTenant(t *testing.T) {
 	h.baseURL = "https://octo.chronicleclassic.com"
 	h.step(t, time.Now(), true)
 	require.Equal(t, []string{h.baseURL}, h.destinations)
+}
+
+func TestEngineRefreshesTenantImmediatelyBeforeUpload(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	installDir := filepath.Dir(filepath.Dir(h.logPath))
+	logDir := filepath.Dir(h.logPath)
+	var calls atomic.Int32
+	h.installsFn = func() []wowdir.Install {
+		baseURL := "https://old.example"
+		if calls.Add(1) > 1 {
+			baseURL = "https://new.example"
+		}
+		return []wowdir.Install{{Dir: installDir, LogDir: logDir, BaseURL: baseURL}}
+	}
+
+	h.step(t, time.Now(), true)
+
+	require.GreaterOrEqual(t, calls.Load(), int32(2))
+	require.Equal(t, []string{"https://new.example"}, h.destinations)
 }
 
 func TestEngineUploadsOnlySelectedInstall(t *testing.T) {
