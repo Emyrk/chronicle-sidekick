@@ -43,9 +43,13 @@ func newValidator(certificate []byte) selfupdate.Validator {
 	return selfupdate.NewChecksumWithECDSAValidator("checksums.txt", certificate)
 }
 
+func shouldInstall(current, latest string, force bool) bool {
+	return force || Newer(current, latest)
+}
+
 // InstallLatest replaces the running executable with the newest authenticated
 // release. macOS app bundles are updated by Sparkle instead.
-func (i *Installer) InstallLatest(ctx context.Context, current string) (string, error) {
+func (i *Installer) InstallLatest(ctx context.Context, current string, force bool) (string, error) {
 	if runtime.GOOS == "darwin" {
 		return "", errors.New("macOS updates are managed by Sparkle")
 	}
@@ -59,7 +63,7 @@ func (i *Installer) InstallLatest(ctx context.Context, current string) (string, 
 	if !found {
 		return "", errors.New("no signed update is available for this platform")
 	}
-	if release.LessOrEqual(current) {
+	if !shouldInstall(current, release.Version(), force) {
 		return "", fmt.Errorf("version %s is already current", current)
 	}
 	executable, err := selfupdate.ExecutablePath()

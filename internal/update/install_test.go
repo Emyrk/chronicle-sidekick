@@ -62,6 +62,14 @@ func TestValidatorRequiresSignedChecksums(t *testing.T) {
 	require.True(t, recursive.MustContinueValidation("checksums.txt"))
 }
 
+func TestShouldInstall(t *testing.T) {
+	t.Parallel()
+	require.True(t, shouldInstall("0.2.0", "0.3.0", false))
+	require.False(t, shouldInstall("0.2.0", "0.2.0", false))
+	require.False(t, shouldInstall("0.3.0", "0.2.0", false))
+	require.True(t, shouldInstall("0.2.0", "0.2.0", true))
+}
+
 func TestNewInstaller(t *testing.T) {
 	installer, err := NewInstaller()
 	require.NoError(t, err)

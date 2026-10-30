@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,6 +34,9 @@ const maxLogSize = 4 << 20
 
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, errAlreadyRunning) && !hasArg(os.Args[1:], "--background") && !hasArg(os.Args[1:], "--wait-for-instance") {
+			showError("Chronicle Sidekick is already running. Use its tray icon, or quit the existing Sidekick before starting it again.")
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -40,14 +44,16 @@ func main() {
 
 func run() error {
 	var (
-		server   = flag.String("server", envOr("CHRONICLE_URL", ""), "Chronicle server URL; remembered for later launches")
-		wowPath  = flag.String("wow-path", "", "WoW folder, flavor folder or executable (replaces saved folders for this launch and later launches)")
-		devToken = flag.String("dev-token", os.Getenv("CHRONICLE_UPLOADER_TOKEN"), "development only: token to store in the keychain instead of pairing (prefer CHRONICLE_UPLOADER_TOKEN; argv is visible to other processes)")
+		server          = flag.String("server", envOr("CHRONICLE_URL", ""), "Chronicle server URL; remembered for later launches")
+		wowPath         = flag.String("wow-path", "", "WoW folder, flavor folder or executable (replaces saved folders for this launch and later launches)")
+		devToken        = flag.String("dev-token", os.Getenv("CHRONICLE_UPLOADER_TOKEN"), "development only: token to store in the keychain instead of pairing (prefer CHRONICLE_UPLOADER_TOKEN; argv is visible to other processes)")
+		background      = flag.Bool("background", false, "start in the system tray without showing the startup window")
+		waitForInstance = flag.Bool("wait-for-instance", false, "wait for the previous Sidekick process to exit")
 	)
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
 		flag.VisitAll(func(f *flag.Flag) {
-			if f.Name != "dev-token" { // hidden dev escape hatch
+			if f.Name != "dev-token" && f.Name != "background" && f.Name != "wait-for-instance" { // hidden internal flags
 				_, _ = fmt.Fprintf(flag.CommandLine.Output(), "  -%s\n    \t%s\n", f.Name, f.Usage)
 			}
 		})
@@ -64,6 +70,11 @@ func run() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	lock, err := acquireInstanceWithWait(filepath.Join(dir, "sidekick.lock"), *waitForInstance)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	st, err := store.Open(filepath.Join(dir, "state.json"))
 	if err != nil {
 		return fmt.Errorf("open state: %w", err)
@@ -119,7 +130,7 @@ func run() error {
 	}
 	a := &app{
 		server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token,
-		installation: installation,
+		installation: installation, background: *background,
 	}
 	if *server != "" {
 		a.uploadOverride = tn.BaseURL

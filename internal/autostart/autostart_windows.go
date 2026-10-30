@@ -34,5 +34,5 @@ func Set(enabled bool, exe string) error {
 		}
 		return nil
 	}
-	return k.SetStringValue(Name, `"`+strings.ReplaceAll(exe, `"`, "")+`"`)
+	return k.SetStringValue(Name, `"`+strings.ReplaceAll(exe, `"`, "")+`" `+backgroundArg)
 }

@@ -35,6 +35,7 @@ type app struct {
 	engine         *engine.Engine
 	cancel         context.CancelFunc
 	installation   installationInfo
+	background     bool
 
 	mu     sync.Mutex
 	status engine.Status
@@ -45,8 +46,8 @@ type app struct {
 	updateVersion string
 	updating      bool
 	pairing       bool   // a pairing is in flight
-	pairCode   string // device code shown while the pairing is waiting
-	pairMsg    string // last pairing outcome, shown until the next attempt
+	pairCode      string // device code shown while the pairing is waiting
+	pairMsg       string // last pairing outcome, shown until the next attempt
 
 	authMu     sync.Mutex
 	token      *oauth2.Token
@@ -59,11 +60,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, upload, wows, report, connect, disconnect, update *systray.MenuItem
-	wowFolders                                                map[string]wowMenuEntry
-	uploadEntries                                             []wowMenuEntry
-	uploadDirs                                                []string
-	uploadCount                                               int
+	status, upload, wows, report, connect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                             map[string]wowMenuEntry
+	uploadEntries                                                          []wowMenuEntry
+	uploadDirs                                                             []string
+	uploadCount                                                            int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -91,7 +92,9 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.disconnect.Hide()
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
+	a.items.forceUpdate = systray.AddMenuItem("Force update now…", "Download, verify, and reinstall the latest release")
 	if nativeUpdaterAvailable() {
+		a.items.forceUpdate.Hide()
 		a.items.update.SetTitle("Check for updates…")
 		a.items.update.Show()
 		startNativeUpdater()
@@ -140,8 +143,10 @@ func (a *app) onReady(ctx context.Context) {
 				if nativeUpdaterAvailable() {
 					checkNativeUpdater()
 				} else {
-					go a.installUpdate(ctx)
+					go a.installUpdate(ctx, false)
 				}
+			case <-a.items.forceUpdate.ClickedCh:
+				go a.installUpdate(ctx, true)
 			case <-choose.ClickedCh:
 				a.chooseFolder(ctx)
 			case <-clearFolders.ClickedCh:
@@ -281,7 +286,7 @@ func (a *app) updateURL() string {
 	return a.updateLink
 }
 
-func (a *app) installUpdate(ctx context.Context) {
+func (a *app) installUpdate(ctx context.Context, force bool) {
 	a.mu.Lock()
 	if a.updating {
 		a.mu.Unlock()
@@ -292,6 +297,10 @@ func (a *app) installUpdate(ctx context.Context) {
 	a.mu.Unlock()
 
 	a.items.update.Disable()
+	a.items.forceUpdate.Disable()
+	if force {
+		a.items.forceUpdate.SetTitle("Installing latest release…")
+	}
 	if wanted != "" {
 		a.items.update.SetTitle("Installing v" + wanted + "…")
 	} else {
@@ -300,7 +309,7 @@ func (a *app) installUpdate(ctx context.Context) {
 
 	installer, err := update.NewInstaller()
 	if err == nil {
-		_, err = installer.InstallLatest(ctx, version)
+		_, err = installer.InstallLatest(ctx, version, force)
 	}
 	if err == nil {
 		err = restartSidekick()
@@ -317,6 +326,8 @@ func (a *app) installUpdate(ctx context.Context) {
 			a.items.update.SetTitle("Update available")
 		}
 		a.items.update.Enable()
+		a.items.forceUpdate.SetTitle("Force update now…")
+		a.items.forceUpdate.Enable()
 		if page := a.updateURL(); page != "" {
 			openURL(page)
 		}
@@ -676,10 +687,26 @@ func pairingStatus(code string) string {
 	return fmt.Sprintf("Code %s: approve in your browser…", code)
 }
 
-// startup shows the not-connected state once on a first launch. It never opens
-// the browser.
-func (a *app) startup(context.Context) {
-	if a.cachedToken() == "" {
+// startup confirms interactive launches and refreshes existing login entries so
+// future automatic starts remain quiet.
+func (a *app) startup(ctx context.Context) {
+	if autostart.Enabled() {
+		executable, err := os.Executable()
+		if err == nil {
+			err = autostart.Set(true, executable)
+		}
+		if err != nil {
+			a.logger.Warn("refresh start at login", "err", err)
+		}
+	}
+	if !a.background {
+		_ = zenity.Info(
+			"Chronicle Sidekick is running in the system tray. Use the tray icon to upload logs, change settings, or quit.",
+			zenity.Title("Chronicle Sidekick"),
+			zenity.Context(ctx),
+		)
+	}
+	if !a.background && a.cachedToken() == "" {
 		notify("Chronicle", "Not connected. Choose \"Connect to Chronicle…\" from the tray menu to start uploading.")
 	}
 }
