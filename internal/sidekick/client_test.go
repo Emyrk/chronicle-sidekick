@@ -94,6 +94,7 @@ func TestUpdate(t *testing.T) {
 		WoWDirectories: []sidekick.WoWDirectory{{
 			ID: "wowdir_1", Path: `C:\\Games\\WoW`, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
+			GameFormat: sidekick.GameFormatWrath335a,
 		}},
 		Issues: []sidekick.Issue{},
 	}

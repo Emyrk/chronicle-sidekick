@@ -245,7 +245,7 @@ func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 	return watch.Trigger{}
 }
 
-func sidekickStatus(installs []wowdir.Install, platform, appVersion string, startAtLogin bool) sidekick.Status {
+func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, platform, appVersion string, startAtLogin bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
 	}
@@ -255,9 +255,10 @@ func sidekickStatus(installs []wowdir.Install, platform, appVersion string, star
 		if name == "" {
 			name = install.BaseURL
 		}
+		id := sidekick.DirectoryID(install.Dir)
 		directories = append(directories, sidekick.WoWDirectory{
-			ID:   sidekick.DirectoryID(install.Dir),
-			Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL, Realmlist: install.Realmlist,
+			ID: id, Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL,
+			Realmlist: install.Realmlist, GameFormat: config.WoWDirectories[id].GameFormat,
 		})
 	}
 	return sidekick.Status{

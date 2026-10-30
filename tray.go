@@ -213,7 +213,7 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	client := sidekick.Client{BaseURL: a.server, Token: token}
 	st := a.store.Get()
-	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version, autostart.Enabled())
+	status := sidekickStatus(a.installs(), st.EffectiveConfig(), a.installation.Platform, a.installation.Version, autostart.Enabled())
 	status.ConfigHash = st.EffectiveConfigHash()
 	response, err := client.Update(ctx, status)
 	if err != nil {

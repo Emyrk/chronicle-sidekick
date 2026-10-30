@@ -45,17 +45,25 @@ func TestInstallationMetadataFitsAPI(t *testing.T) {
 
 func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	t.Parallel()
+	dir := filepath.Join("games", "warmane")
+	id := sidekick.DirectoryID(dir)
+	config := sidekick.SidekickConfig{
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			id: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
+	}
 	status := sidekickStatus([]wowdir.Install{{
-		Flavor: "Warmane", Dir: filepath.Join("games", "warmane"),
+		Flavor: "Warmane", Dir: dir,
 		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-	}}, "windows/amd64", "1.2.3", true)
+	}}, config, "windows/amd64", "1.2.3", true)
 	require.Equal(t, sidekick.Status{
 		Platform: "windows/amd64", SidekickVersion: "1.2.3",
 		StartAtLogin: true, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: []sidekick.WoWDirectory{{
-			ID:   sidekick.DirectoryID(filepath.Join("games", "warmane")),
-			Path: filepath.Join("games", "warmane"), TenantName: "Warmane",
+			ID: id, Path: dir, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
+			GameFormat: sidekick.GameFormatWrath335a,
 		}},
 		Issues: []sidekick.Issue{},
 	}, status)
@@ -67,7 +75,7 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	for i := range installs {
 		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
 	}
-	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
+	require.Len(t, sidekickStatus(installs, sidekick.DefaultConfig(), "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
 }
 
 func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
