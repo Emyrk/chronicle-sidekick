@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"regexp"
 	"testing"
 	"time"
 
@@ -68,6 +69,38 @@ func TestShouldInstall(t *testing.T) {
 	require.False(t, shouldInstall("0.2.0", "0.2.0", false))
 	require.False(t, shouldInstall("0.3.0", "0.2.0", false))
 	require.True(t, shouldInstall("0.2.0", "0.2.0", true))
+}
+
+func TestPortableAssetFilterExcludesInstallers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		goos, goarch string
+		match        []string
+		reject       []string
+	}{
+		{
+			goos: "windows", goarch: "amd64",
+			match:  []string{"Chronicle-Sidekick-windows-amd64.exe", "https://example/releases/Chronicle-Sidekick-windows-amd64.exe"},
+			reject: []string{"Chronicle-Sidekick-Setup-windows-amd64.exe", "Chronicle-Sidekick-windows-arm64.exe"},
+		},
+		{
+			goos: "linux", goarch: "arm64",
+			match:  []string{"Chronicle-Sidekick-linux-arm64.tar.gz"},
+			reject: []string{"Chronicle-Sidekick-linux-arm64.zip", "Chronicle-Sidekick-linux-amd64.tar.gz"},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
+			re := regexp.MustCompile(portableAssetFilter(test.goos, test.goarch))
+			for _, name := range test.match {
+				require.Truef(t, re.MatchString(name), "expected %q to match", name)
+			}
+			for _, name := range test.reject {
+				require.Falsef(t, re.MatchString(name), "expected %q not to match", name)
+			}
+		})
+	}
 }
 
 func TestNewInstaller(t *testing.T) {
