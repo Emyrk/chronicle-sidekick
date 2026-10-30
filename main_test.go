@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -138,6 +139,32 @@ func TestWoWFolderErrorIsActionable(t *testing.T) {
 	title, message = wowFolderError(errors.New("bad folder"))
 	require.Equal(t, "WoW folder not recognized", title)
 	require.Contains(t, message, "not added")
+}
+
+func TestCancelPairingCancelsActiveContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &app{pairing: true, pairCancel: cancel}
+
+	a.cancelPairing()
+
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+}
+
+func TestBeginPairingCommitSerializesCancellation(t *testing.T) {
+	t.Parallel()
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	canceled := &app{pairing: true, pairCancel: cancel}
+	canceled.cancelPairing()
+	require.False(t, canceled.beginPairingCommit(canceledCtx))
+
+	approvedCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	approved := &app{pairing: true, pairCancel: cancel}
+	require.True(t, approved.beginPairingCommit(approvedCtx))
+	approved.cancelPairing()
+	require.NoError(t, approvedCtx.Err())
 }
 
 func TestPairingStatusShowsDeviceCode(t *testing.T) {
