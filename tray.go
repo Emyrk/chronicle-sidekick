@@ -817,7 +817,7 @@ func (a *app) startup(ctx context.Context) {
 	}
 	if !a.background {
 		_ = zenity.Info(
-			"Chronicle Sidekick is running in the system tray. Use the tray icon to upload logs, change settings, or quit.",
+			"Chronicle Sidekick started. Look for its icon in the system tray.",
 			zenity.Title("Chronicle Sidekick"),
 			zenity.Context(ctx),
 		)
