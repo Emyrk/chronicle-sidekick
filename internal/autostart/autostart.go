@@ -9,6 +9,8 @@ import (
 // Name identifies the uploader in every OS's login-item list.
 const Name = "com.chronicle.uploader"
 
+const backgroundArg = "--background"
+
 func plist(exe string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -19,12 +21,13 @@ func plist(exe string) string {
   <key>ProgramArguments</key>
   <array>
     <string>%s</string>
+    <string>%s</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
 </dict>
 </plist>
-`, Name, xmlEscape(exe))
+`, Name, xmlEscape(exe), backgroundArg)
 }
 
 func desktopEntry(exe string) string {
@@ -34,9 +37,9 @@ func desktopEntry(exe string) string {
 Type=Application
 Name=Chronicle Sidekick
 Comment=Uploads your WoW combat logs to Chronicle
-Exec=%s
+Exec=%s %s
 X-GNOME-Autostart-enabled=true
-`, quoted)
+`, quoted, backgroundArg)
 }
 
 func xmlEscape(s string) string {

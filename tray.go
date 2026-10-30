@@ -35,6 +35,7 @@ type app struct {
 	engine         *engine.Engine
 	cancel         context.CancelFunc
 	installation   installationInfo
+	background     bool
 
 	mu     sync.Mutex
 	status engine.Status
@@ -45,8 +46,8 @@ type app struct {
 	updateVersion string
 	updating      bool
 	pairing       bool   // a pairing is in flight
-	pairCode   string // device code shown while the pairing is waiting
-	pairMsg    string // last pairing outcome, shown until the next attempt
+	pairCode      string // device code shown while the pairing is waiting
+	pairMsg       string // last pairing outcome, shown until the next attempt
 
 	authMu     sync.Mutex
 	token      *oauth2.Token
@@ -676,10 +677,26 @@ func pairingStatus(code string) string {
 	return fmt.Sprintf("Code %s: approve in your browser…", code)
 }
 
-// startup shows the not-connected state once on a first launch. It never opens
-// the browser.
-func (a *app) startup(context.Context) {
-	if a.cachedToken() == "" {
+// startup confirms interactive launches and refreshes existing login entries so
+// future automatic starts remain quiet.
+func (a *app) startup(ctx context.Context) {
+	if autostart.Enabled() {
+		executable, err := os.Executable()
+		if err == nil {
+			err = autostart.Set(true, executable)
+		}
+		if err != nil {
+			a.logger.Warn("refresh start at login", "err", err)
+		}
+	}
+	if !a.background {
+		_ = zenity.Info(
+			"Chronicle Sidekick is running in the system tray. Use the tray icon to upload logs, change settings, or quit.",
+			zenity.Title("Chronicle Sidekick"),
+			zenity.Context(ctx),
+		)
+	}
+	if !a.background && a.cachedToken() == "" {
 		notify("Chronicle", "Not connected. Choose \"Connect to Chronicle…\" from the tray menu to start uploading.")
 	}
 }

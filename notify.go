@@ -21,6 +21,11 @@ func notify(title, message string) {
 	_ = zenity.Notify(message, zenity.Title(title), zenity.Context(ctx))
 }
 
+// showError displays an error before the tray has started.
+func showError(message string) {
+	_ = zenity.Error(message, zenity.Title("Chronicle Sidekick"))
+}
+
 // openURL opens a link in the user's browser.
 func openURL(url string) {
 	var cmd *exec.Cmd
