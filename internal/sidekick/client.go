@@ -76,11 +76,15 @@ func (c SidekickConfig) Validate() error {
 
 // Status is the complete installation snapshot sent in each heartbeat.
 type Status struct {
-	Platform       string         `json:"platform,omitempty"`
-	Version        string         `json:"version,omitempty"`
-	ConfigHash     string         `json:"config_hash,omitempty"`
-	WoWDirectories []WoWDirectory `json:"wow_directories"`
-	Issues         []Issue        `json:"issues"`
+	Platform   string `json:"platform,omitempty"`
+	Version    string `json:"version,omitempty"`
+	ConfigHash string `json:"config_hash,omitempty"`
+	// StartAtLogin is observed local state. It is not server-managed config.
+	StartAtLogin bool `json:"start_at_login"`
+	// ArchiveAfterUpload is the local tray setting, inverse of Store.KeepLog.
+	ArchiveAfterUpload bool           `json:"archive_after_upload"`
+	WoWDirectories     []WoWDirectory `json:"wow_directories"`
+	Issues             []Issue        `json:"issues"`
 }
 
 // UpdateResponse tells Sidekick which managed config Chronicle wants applied.

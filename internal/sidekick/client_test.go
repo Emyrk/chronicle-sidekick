@@ -18,10 +18,23 @@ func TestHashConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{"version":1,"auto_upload":{"enabled":false}}`, string(canonical))
 	require.Equal(t, `{"version":1,"auto_upload":{"enabled":false}}`, string(canonical))
+	require.NotContains(t, string(canonical), "start_at_login")
 
 	hash, err := sidekick.HashConfig(sidekick.DefaultConfig())
 	require.NoError(t, err)
 	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", hash)
+}
+
+func TestStatusAlwaysSerializesLocalSettings(t *testing.T) {
+	t.Parallel()
+	body, err := json.Marshal(sidekick.Status{})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"start_at_login": false,
+		"archive_after_upload": false,
+		"wow_directories": null,
+		"issues": null
+	}`, string(body))
 }
 
 func TestUpdate(t *testing.T) {
@@ -49,6 +62,7 @@ func TestUpdate(t *testing.T) {
 
 	status := sidekick.Status{
 		Platform: "windows/amd64", Version: "1.2.3", ConfigHash: "hash-1",
+		StartAtLogin: true, ArchiveAfterUpload: true,
 		WoWDirectories: []sidekick.WoWDirectory{{
 			Path: `C:\\Games\\WoW`, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",

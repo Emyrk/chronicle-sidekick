@@ -48,9 +48,10 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	status := sidekickStatus([]wowdir.Install{{
 		Flavor: "Warmane", Dir: filepath.Join("games", "warmane"),
 		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-	}}, "windows/amd64", "1.2.3")
+	}}, "windows/amd64", "1.2.3", true, false)
 	require.Equal(t, sidekick.Status{
 		Platform: "windows/amd64", Version: "1.2.3",
+		StartAtLogin: true, ArchiveAfterUpload: false,
 		WoWDirectories: []sidekick.WoWDirectory{{
 			Path: filepath.Join("games", "warmane"), TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
@@ -65,7 +66,7 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	for i := range installs {
 		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
 	}
-	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev").WoWDirectories, maxStatusWoWDirectories)
+	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev", false, true).WoWDirectories, maxStatusWoWDirectories)
 }
 
 func TestReconcileConfigPersistsMismatch(t *testing.T) {

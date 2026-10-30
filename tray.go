@@ -160,8 +160,13 @@ func (a *app) onReady(ctx context.Context) {
 				a.detectWoWFolders(ctx)
 			case <-archive.ClickedCh:
 				on := !archive.Checked()
+				if err := a.store.Update(func(s *store.State) { s.KeepLog = !on }); err != nil {
+					a.logger.Error("archive after upload", "err", err)
+					notify("Chronicle", "Couldn't change archive-after-upload setting.")
+					continue
+				}
 				a.toggle(archive, on)
-				_ = a.store.Update(func(s *store.State) { s.KeepLog = !on })
+				go a.reportStatusOnce(ctx)
 			case <-login.ClickedCh:
 				on := !login.Checked()
 				exe, err := os.Executable()
@@ -174,6 +179,7 @@ func (a *app) onReady(ctx context.Context) {
 					continue
 				}
 				a.toggle(login, on)
+				go a.reportStatusOnce(ctx)
 			case <-quit.ClickedCh:
 				a.cancel()
 				return
@@ -207,8 +213,9 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 		return
 	}
 	client := sidekick.Client{BaseURL: a.server, Token: token}
-	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version)
-	status.ConfigHash = a.store.Get().EffectiveConfigHash()
+	st := a.store.Get()
+	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version, autostart.Enabled(), !st.KeepLog)
+	status.ConfigHash = st.EffectiveConfigHash()
 	response, err := client.Update(ctx, status)
 	if err != nil {
 		a.logger.Warn("Sidekick status update", "err", err)
