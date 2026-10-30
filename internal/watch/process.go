@@ -35,9 +35,10 @@ type Procs interface {
 // known only that pid is polled; the process table is listed only while no pid
 // is known. Not safe for concurrent use.
 type Game struct {
-	procs  Procs
-	names  map[string]bool
-	prefix []string
+	procs      Procs
+	names      map[string]bool
+	prefix     []string
+	strictDirs bool
 
 	pid     int32
 	name    string // the known client's process name
@@ -66,6 +67,14 @@ func NewGame(l tenant.Layout, procs Procs) *Game {
 	return g
 }
 
+// NewGameForInstall returns a detector that verifies candidate executables are
+// inside the supplied install directory. Use one instance per installation.
+func NewGameForInstall(l tenant.Layout, procs Procs) *Game {
+	g := NewGame(l, procs)
+	g.strictDirs = true
+	return g
+}
+
 // Running reports whether a WoW client is running. A known client is checked by
 // pid and name. Otherwise one process snapshot is matched by name, and at most
 // every exeScanEvery by whether the executable of a not yet rejected process
@@ -74,7 +83,12 @@ func NewGame(l tenant.Layout, procs Procs) *Game {
 // transient failure is not mistaken for the game exiting.
 func (g *Game) Running(ctx context.Context, installDirs []string) bool {
 	if g.pid != 0 {
-		if ok, err := g.procs.Exists(ctx, g.pid, g.name); err == nil && ok {
+		ok, err := g.procs.Exists(ctx, g.pid, g.name)
+		if err == nil && ok && g.strictDirs {
+			exe, exeErr := g.procs.Exe(ctx, g.pid)
+			ok = exeErr == nil && underAny(exe, installDirs)
+		}
+		if err == nil && ok {
 			return true
 		}
 		g.pid = 0
@@ -97,8 +111,17 @@ func (g *Game) find(ctx context.Context, installDirs []string) (Process, bool) {
 		return Process{}, false
 	}
 	for _, p := range procs {
-		if g.matchName(p.Name) && g.alive(ctx, p) {
+		if !g.matchName(p.Name) {
+			continue
+		}
+		if !g.strictDirs && g.alive(ctx, p) {
 			return p, true
+		}
+		if g.strictDirs {
+			exe, err := g.procs.Exe(ctx, p.PID)
+			if err == nil && underAny(exe, installDirs) && g.alive(ctx, p) {
+				return p, true
+			}
 		}
 	}
 	live := make(map[int32]bool, len(procs))

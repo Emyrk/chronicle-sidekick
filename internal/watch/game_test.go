@@ -16,6 +16,7 @@ import (
 
 type fakeProcs struct {
 	table  []watch.Process
+	exes   map[int32]string
 	lists  int
 	exists int
 }
@@ -25,7 +26,7 @@ func (f *fakeProcs) List(context.Context) ([]watch.Process, error) {
 	return f.table, nil
 }
 
-func (f *fakeProcs) Exe(context.Context, int32) (string, error) { return "", nil }
+func (f *fakeProcs) Exe(_ context.Context, pid int32) (string, error) { return f.exes[pid], nil }
 
 func (f *fakeProcs) Exists(_ context.Context, pid int32, name string) (bool, error) {
 	f.exists++
@@ -58,6 +59,47 @@ func TestGameEnumeratesOnlyWithoutKnownPid(t *testing.T) {
 	require.True(t, g.Running(ctx, nil), "first miss is debounced")
 	require.Equal(t, 2, fp.lists, "a dead pid triggers one enumeration")
 	require.False(t, g.Running(ctx, nil), "second miss is an exit")
+}
+
+func TestGameForInstallChecksExecutableDirectory(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	fp := &fakeProcs{
+		table: []watch.Process{{PID: 1, Name: "Wow.exe"}, {PID: 2, Name: "Wow.exe"}},
+		exes: map[int32]string{
+			1: filepath.Join(first, "Wow.exe"),
+			2: filepath.Join(second, "Wow.exe"),
+		},
+	}
+
+	firstGame := watch.NewGameForInstall(tenant.DefaultLayout, fp)
+	secondGame := watch.NewGameForInstall(tenant.DefaultLayout, fp)
+	require.True(t, firstGame.Running(ctx, []string{first}))
+	require.True(t, secondGame.Running(ctx, []string{second}))
+
+	fp.table = fp.table[:1]
+	require.True(t, firstGame.Running(ctx, []string{first}))
+	require.True(t, secondGame.Running(ctx, []string{second}), "first miss is debounced")
+	require.False(t, secondGame.Running(ctx, []string{second}))
+}
+
+func TestGameForInstallDropsPidReusedByAnotherInstall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	fp := &fakeProcs{
+		table: []watch.Process{{PID: 1, Name: "Wow.exe"}},
+		exes:  map[int32]string{1: filepath.Join(first, "Wow.exe")},
+	}
+	game := watch.NewGameForInstall(tenant.DefaultLayout, fp)
+	require.True(t, game.Running(ctx, []string{first}))
+
+	fp.exes[1] = filepath.Join(second, "Wow.exe")
+	require.True(t, game.Running(ctx, []string{first}), "first miss is debounced")
+	require.False(t, game.Running(ctx, []string{first}))
 }
 
 // A recycled pid (or a zombie that stopped being the client) is not the game.

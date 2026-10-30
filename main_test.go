@@ -60,16 +60,25 @@ func TestInstallationMetadataFitsAPI(t *testing.T) {
 
 func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	t.Parallel()
+	dir := filepath.Join("games", "warmane")
+	id := sidekick.DirectoryID(dir)
+	config := sidekick.SidekickConfig{
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			id: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
+	}
 	status := sidekickStatus([]wowdir.Install{{
-		Flavor: "Warmane", Dir: filepath.Join("games", "warmane"),
+		Flavor: "Warmane", Dir: dir,
 		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-	}}, "windows/amd64", "1.2.3", true, false)
+	}}, config, "windows/amd64", "1.2.3", true)
 	require.Equal(t, sidekick.Status{
-		Platform: "windows/amd64", Version: "1.2.3",
-		StartAtLogin: true, ArchiveAfterUpload: false,
+		Platform: "windows/amd64", SidekickVersion: "1.2.3",
+		StartAtLogin: true, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: []sidekick.WoWDirectory{{
-			Path: filepath.Join("games", "warmane"), TenantName: "Warmane",
+			ID: id, Path: dir, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
+			GameFormat: sidekick.GameFormatWrath335a,
 		}},
 		Issues: []sidekick.Issue{},
 	}, status)
@@ -81,7 +90,32 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	for i := range installs {
 		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
 	}
-	require.Len(t, sidekickStatus(installs, "linux/amd64", "dev", false, true).WoWDirectories, maxStatusWoWDirectories)
+	require.Len(t, sidekickStatus(installs, sidekick.DefaultConfig(), "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
+}
+
+func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := fakeLegacyInstall(t, root, "Warmane", "logon.warmane.com")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{dir}
+		s.WoWPathsSet = true
+		s.Config = sidekick.SidekickConfig{
+			Version: sidekick.CurrentConfigVersion,
+			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+				sidekick.DirectoryID(dir): {
+					GameFormat: sidekick.GameFormatWrath335a,
+					AutoUpload: sidekick.AutoUploadOnGameExit,
+				},
+			},
+		}
+	}))
+	a := &app{store: st, layout: tenant.DefaultLayout}
+	require.True(t, a.autoUploadTrigger(wowdir.Install{Dir: dir}).OnExit)
+	require.False(t, a.autoUploadTrigger(wowdir.Install{Dir: filepath.Join(dir, "other")}).OnExit)
+	require.Equal(t, sidekick.GameFormatWrath335a, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
 func TestReconcileConfigPersistsMismatch(t *testing.T) {
@@ -89,9 +123,12 @@ func TestReconcileConfigPersistsMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := store.Open(path)
 	require.NoError(t, err)
+	directoryID := sidekick.DirectoryID("/wow/warmane")
 	cfg := sidekick.SidekickConfig{
-		Version:    sidekick.CurrentConfigVersion,
-		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
 	}
 
 	hash, err := sidekick.HashConfig(cfg)
@@ -103,7 +140,7 @@ func TestReconcileConfigPersistsMismatch(t *testing.T) {
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, hash, again.Get().EffectiveConfigHash())
-	require.True(t, again.Get().EffectiveConfig().AutoUpload.Enabled)
+	require.Equal(t, sidekick.AutoUploadOnGameExit, again.Get().EffectiveConfig().WoWDirectories[directoryID].AutoUpload)
 }
 
 func TestReconcileConfigToleratesAbsentConfig(t *testing.T) {
@@ -114,7 +151,7 @@ func TestReconcileConfigToleratesAbsentConfig(t *testing.T) {
 	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "desired"})
 	require.NoError(t, err)
 	require.False(t, changed)
-	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
 }
 
 func TestReconcileConfigRejectsUnknownVersion(t *testing.T) {
@@ -126,23 +163,26 @@ func TestReconcileConfigRejectsUnknownVersion(t *testing.T) {
 	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "future", Config: &cfg})
 	require.ErrorContains(t, err, "unsupported Sidekick config version")
 	require.False(t, changed)
-	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
 }
 
 func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
 	t.Parallel()
 	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
 	require.NoError(t, err)
+	directoryID := sidekick.DirectoryID("/wow/warmane")
 	cfg := sidekick.SidekickConfig{
-		Version:    sidekick.CurrentConfigVersion,
-		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
 	}
 
 	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "wrong", Config: &cfg})
 	require.ErrorContains(t, err, "config hash mismatch")
 	require.False(t, changed)
-	require.False(t, st.Get().EffectiveConfig().AutoUpload.Enabled)
-	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", st.Get().EffectiveConfigHash())
+	require.Empty(t, st.Get().EffectiveConfig().WoWDirectories)
+	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
 }
 
 func TestWoWFolderErrorIsActionable(t *testing.T) {

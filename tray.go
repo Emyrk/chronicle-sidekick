@@ -186,7 +186,6 @@ func (a *app) onReady(ctx context.Context) {
 					continue
 				}
 				a.toggle(archive, on)
-				go a.reportStatusOnce(ctx)
 			case <-login.ClickedCh:
 				on := !login.Checked()
 				exe, err := os.Executable()
@@ -258,7 +257,7 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	client := sidekick.Client{BaseURL: a.server, Token: token}
 	st := a.store.Get()
-	status := sidekickStatus(a.installs(), a.installation.Platform, a.installation.Version, autostart.Enabled(), !st.KeepLog)
+	status := sidekickStatus(a.installs(), st.EffectiveConfig(), a.installation.Platform, a.installation.Version, autostart.Enabled())
 	status.ConfigHash = st.EffectiveConfigHash()
 	response, err := client.Update(ctx, status)
 	if err != nil {
