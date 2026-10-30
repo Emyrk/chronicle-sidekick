@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"sync"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
@@ -35,13 +36,13 @@ var (
 )
 
 var stateColors = map[engine.State]color.NRGBA{
-	engine.StateIdle:      {0x8a, 0x8f, 0x98, 0xff}, // gray: waiting for WoW
-	engine.StateNoLog:     {0xe5, 0x48, 0x4d, 0xff}, // red: combat logging not detected
-	engine.StateWaiting:   {0xf9, 0x73, 0x16, 0xff}, // orange: combat logging started, waiting for data
-	engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff}, // green: combat log receiving data
-	engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff}, // blue: uploading or retrying
-	engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff}, // green: upload complete
-	engine.StateReconnect: {0xf2, 0xc1, 0x2e, 0xff}, // yellow: Chronicle sign-in required
+	engine.StateIdle:      {0x4b, 0x55, 0x63, 0xff}, // muted gray: waiting for WoW
+	engine.StateNoLog:     {0x7f, 0x3f, 0x46, 0xff}, // muted red: combat logging not detected
+	engine.StateWaiting:   {0x8a, 0x5a, 0x32, 0xff}, // muted orange: combat logging started, waiting for data
+	engine.StateRecording: {0x35, 0x6b, 0x4b, 0xff}, // muted green: combat log receiving data
+	engine.StateUploading: {0x3f, 0x62, 0x8b, 0xff}, // muted blue: uploading or retrying
+	engine.StateUploaded:  {0x35, 0x6b, 0x4b, 0xff}, // muted green: upload complete
+	engine.StateReconnect: {0x80, 0x6d, 0x36, 0xff}, // muted yellow: Chronicle sign-in required
 }
 
 type iconKey struct {
@@ -54,8 +55,8 @@ var (
 	iconCache = map[iconKey][]byte{}
 )
 
-// trayIcon returns the Chronicle logo with its mark in the state's colour, in
-// the platform's icon format.
+// trayIcon returns the Chronicle logo with a muted state-coloured background,
+// in the platform's icon format.
 func trayIcon(s engine.State) []byte {
 	dark := menuBarDark()
 	iconMu.Lock()
@@ -74,8 +75,8 @@ type sizedPNG struct {
 	size int
 }
 
-// buildIcons composites the tinted logo mark onto the body or bodies this
-// platform uses.
+// buildIcons composites a muted state background, the platform body and a
+// high-contrast white robot.
 func buildIcons(s engine.State, dark bool) []sizedPNG {
 	type pair struct{ body, mask []byte }
 	pairs := []pair{{logoColor16, logoMarkMask16}, {logoColor32, logoMarkMask32}}
@@ -87,7 +88,7 @@ func buildIcons(s engine.State, dark bool) []sizedPNG {
 	}
 	out := make([]sizedPNG, 0, len(pairs))
 	for _, p := range pairs {
-		img := markOnBody(p.body, p.mask, stateColors[s])
+		img := composeIcon(p.body, p.mask, stateColors[s])
 		var buf bytes.Buffer
 		_ = png.Encode(&buf, img)
 		out = append(out, sizedPNG{buf.Bytes(), img.Bounds().Dx()})
@@ -95,14 +96,41 @@ func buildIcons(s engine.State, dark bool) []sizedPNG {
 	return out
 }
 
-// markOnBody paints the mask tinted with c over the body.
-func markOnBody(bodyPNG, maskPNG []byte, c color.NRGBA) *image.NRGBA {
+func composeIcon(bodyPNG, maskPNG []byte, background color.NRGBA) *image.NRGBA {
 	body := decodePNG(bodyPNG)
-	mask := decodePNG(maskPNG)
+	robot := decodePNG(maskPNG)
 	dst := image.NewNRGBA(body.Bounds())
-	draw.Draw(dst, dst.Bounds(), body, image.Point{}, draw.Src)
-	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(c), image.Point{}, mask, image.Point{}, draw.Over)
+	stateMask := stateBackgroundMask(body.Bounds())
+	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(background), image.Point{}, stateMask, image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), body, image.Point{}, draw.Over)
+	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(color.NRGBA{255, 255, 255, 255}), image.Point{}, robot, image.Point{}, draw.Over)
 	return dst
+}
+
+// stateBackgroundMask fills the circular area inside the arrows. Supersampling
+// keeps its edge smooth at 16 px without adding another embedded asset.
+func stateBackgroundMask(bounds image.Rectangle) *image.Alpha {
+	const samples = 4
+	mask := image.NewAlpha(bounds)
+	w, h := float64(bounds.Dx()), float64(bounds.Dy())
+	cx, cy := float64(bounds.Min.X)+w*0.5, float64(bounds.Min.Y)+h*0.5
+	rx, ry := w*0.32, h*0.32
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			inside := 0
+			for sy := 0; sy < samples; sy++ {
+				for sx := 0; sx < samples; sx++ {
+					px := (float64(x) + (float64(sx)+0.5)/samples - cx) / rx
+					py := (float64(y) + (float64(sy)+0.5)/samples - cy) / ry
+					if math.Hypot(px, py) <= 1 {
+						inside++
+					}
+				}
+			}
+			mask.SetAlpha(x, y, color.Alpha{A: uint8(inside * 255 / (samples * samples))})
+		}
+	}
+	return mask
 }
 
 func decodePNG(b []byte) image.Image {
