@@ -210,7 +210,7 @@ func ensureInstallation(st *store.Store) (installationInfo, error) {
 
 const maxStatusWoWDirectories = 50
 
-func sidekickStatus(installs []wowdir.Install, platform, appVersion string) sidekick.Status {
+func sidekickStatus(installs []wowdir.Install, platform, appVersion string, startAtLogin, archiveAfterUpload bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
 	}
@@ -226,6 +226,7 @@ func sidekickStatus(installs []wowdir.Install, platform, appVersion string) side
 	}
 	return sidekick.Status{
 		Platform: platform, Version: appVersion,
+		StartAtLogin: startAtLogin, ArchiveAfterUpload: archiveAfterUpload,
 		WoWDirectories: directories,
 		Issues:         []sidekick.Issue{},
 	}
