@@ -39,13 +39,13 @@ func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.Update(func(st *store.State) {
 		st.WoWPaths = []string{"/wow/capy", "/wow/warmane"}
-		st.DisableAutomaticWoWDetection = true
+		st.WoWPathsSet = true
 	}))
 
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, []string{"/wow/capy", "/wow/warmane"}, again.Get().WoWPaths)
-	require.True(t, again.Get().DisableAutomaticWoWDetection)
+	require.True(t, again.Get().WoWPathsSet)
 	copy := again.Get()
 	copy.WoWPaths[0] = "/changed"
 	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])

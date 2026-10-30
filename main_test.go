@@ -177,6 +177,7 @@ func TestAddAndRemoveWoWPaths(t *testing.T) {
 	t.Parallel()
 	st := store.State{WoWPath: filepath.Join("old", "wow")}
 	require.True(t, addWoWPath(&st, filepath.Join("new", "wow")))
+	require.True(t, st.WoWPathsSet)
 	require.Empty(t, st.WoWPath)
 	require.Equal(t, []string{filepath.Join("old", "wow"), filepath.Join("new", "wow")}, st.WoWPaths)
 	require.False(t, addWoWPath(&st, filepath.Join("new", "wow")))
@@ -187,22 +188,45 @@ func TestAddAndRemoveWoWPaths(t *testing.T) {
 	require.Empty(t, st.WoWPaths)
 }
 
-func TestAutomaticWoWDetectionSettingPersists(t *testing.T) {
+func TestAddDetectedWoWPathsPreservesManualFolders(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "state.json")
-	st, err := store.Open(path)
-	require.NoError(t, err)
-	require.True(t, automaticWoWDetectionEnabled(st.Get()))
+	root := t.TempDir()
+	manual := fakeLegacyInstall(t, root, "Manual", "apac.capycraft.io")
+	detected := fakeLegacyInstall(t, root, "Detected", "logon.warmane.com")
+	st := store.State{WoWPaths: []string{manual}}
 
-	require.NoError(t, st.Update(func(s *store.State) { setAutomaticWoWDetection(s, false) }))
-	again, err := store.Open(path)
-	require.NoError(t, err)
-	require.False(t, automaticWoWDetectionEnabled(again.Get()))
+	added := addDetectedWoWPaths(&st, []wowdir.Install{
+		{Dir: manual},
+		{Dir: detected},
+		{Dir: detected},
+	}, tenant.DefaultLayout)
 
-	require.NoError(t, again.Update(func(s *store.State) { setAutomaticWoWDetection(s, true) }))
-	again, err = store.Open(path)
-	require.NoError(t, err)
-	require.True(t, automaticWoWDetectionEnabled(again.Get()))
+	require.Equal(t, []string{detected}, added)
+	require.True(t, st.WoWPathsSet)
+	require.Equal(t, []string{manual, detected}, st.WoWPaths)
+	require.Empty(t, st.WoWPath)
+	require.Empty(t, addDetectedWoWPaths(&st, []wowdir.Install{{Dir: detected}}, tenant.DefaultLayout))
+}
+
+func TestAutomaticWoWFallbackStopsAfterFolderListIsManaged(t *testing.T) {
+	t.Parallel()
+	require.True(t, useAutomaticWoWFallback(store.State{}))
+	require.False(t, useAutomaticWoWFallback(store.State{WoWPaths: []string{"/wow"}}))
+	require.False(t, useAutomaticWoWFallback(store.State{WoWPathsSet: true}))
+	require.False(t, useAutomaticWoWFallback(store.State{WoWPath: "/legacy/wow"}))
+}
+
+func TestAddDetectedWoWPathsDeduplicatesSymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	manual := fakeLegacyInstall(t, root, "Manual", "apac.capycraft.io")
+	alias := filepath.Join(root, "Manual alias")
+	if err := os.Symlink(manual, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	st := store.State{WoWPaths: []string{manual}}
+	require.Empty(t, addDetectedWoWPaths(&st, []wowdir.Install{{Dir: alias}}, tenant.DefaultLayout))
+	require.Equal(t, []string{manual}, st.WoWPaths)
 }
 
 func TestWoWUploadTargets(t *testing.T) {
@@ -256,7 +280,6 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Update(func(s *store.State) {
 		s.WoWPaths = []string{capy, warmane, capy}
-		s.DisableAutomaticWoWDetection = true
 	}))
 
 	a := &app{store: st, layout: tenant.DefaultLayout}
@@ -268,37 +291,25 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.Equal(t, "https://warmane.chronicleclassic.com", got[1].BaseURL)
 }
 
-func TestInstallsCombinesAutomaticAndManualFolders(t *testing.T) {
+func TestInstallsDeduplicatesConfiguredPathAliases(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	capy := fakeLegacyInstall(t, root, "Capy", "apac.capycraft.io")
-	warmane := fakeLegacyInstall(t, root, "Warmane", "logon.warmane.com")
-	automatic := filepath.Join(root, "Automatic")
-
+	manual := fakeLegacyInstall(t, root, "Manual", "apac.capycraft.io")
+	alias := filepath.Join(root, "Manual alias")
+	if err := os.Symlink(manual, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
 	st, err := store.Open(filepath.Join(root, "state.json"))
 	require.NoError(t, err)
-	require.NoError(t, st.Update(func(s *store.State) { s.WoWPaths = []string{capy, warmane} }))
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{manual, alias}
+		s.WoWPathsSet = true
+	}))
 
-	a := &app{
-		store: st, layout: tenant.DefaultLayout,
-		detectWoW: func() []wowdir.Install {
-			return []wowdir.Install{
-				{Flavor: "Automatic", Dir: automatic},
-				{Flavor: "CapyCraft", Dir: filepath.Join(capy, "folder", "..")},
-			}
-		},
-	}
+	a := &app{store: st, layout: tenant.DefaultLayout}
 	got := a.installs()
-	require.Len(t, got, 3)
-	require.Equal(t, automatic, got[0].Dir)
-	require.Equal(t, capy, got[1].Dir)
-	require.Equal(t, warmane, got[2].Dir)
-
-	require.NoError(t, st.Update(func(s *store.State) { s.DisableAutomaticWoWDetection = true }))
-	got = a.installs()
-	require.Len(t, got, 2)
-	require.Equal(t, capy, got[0].Dir)
-	require.Equal(t, warmane, got[1].Dir)
+	require.Len(t, got, 1)
+	require.Equal(t, manual, got[0].Dir)
 }
 
 func TestInstallsReadsLegacySingleWoWPath(t *testing.T) {
@@ -307,10 +318,7 @@ func TestInstallsReadsLegacySingleWoWPath(t *testing.T) {
 	octo := fakeLegacyInstall(t, root, "Octo", "play.octowow.st")
 	st, err := store.Open(filepath.Join(root, "state.json"))
 	require.NoError(t, err)
-	require.NoError(t, st.Update(func(s *store.State) {
-		s.WoWPath = octo
-		s.DisableAutomaticWoWDetection = true
-	}))
+	require.NoError(t, st.Update(func(s *store.State) { s.WoWPath = octo }))
 
 	a := &app{store: st, layout: tenant.DefaultLayout}
 	got := a.installs()
