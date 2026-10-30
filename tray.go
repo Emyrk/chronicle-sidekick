@@ -45,9 +45,10 @@ type app struct {
 	updateLink    string
 	updateVersion string
 	updating      bool
-	pairing       bool   // a pairing is in flight
-	pairCode      string // device code shown while the pairing is waiting
-	pairMsg       string // last pairing outcome, shown until the next attempt
+	pairing       bool               // a pairing is in flight
+	pairCancel    context.CancelFunc // cancels the active pairing request and poll
+	pairCode      string             // device code shown while the pairing is waiting
+	pairMsg       string             // last pairing outcome, shown until the next attempt
 
 	authMu     sync.Mutex
 	token      *oauth2.Token
@@ -60,11 +61,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, version, upload, wows, report, connect, disconnect, update, forceUpdate *systray.MenuItem
-	wowFolders                                                                      map[string]wowMenuEntry
-	uploadEntries                                                                   []wowMenuEntry
-	uploadDirs                                                                      []string
-	uploadCount                                                                     int
+	status, version, upload, wows, report, connect, cancelConnect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                                                     map[string]wowMenuEntry
+	uploadEntries                                                                                  []wowMenuEntry
+	uploadDirs                                                                                     []string
+	uploadCount                                                                                    int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -90,6 +91,8 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.report.Disable()
 	a.items.connect = systray.AddMenuItem("Connect to Chronicle…", "")
 	a.items.connect.Hide()
+	a.items.cancelConnect = systray.AddMenuItem("Cancel connection", "Cancel the current browser sign-in and start over")
+	a.items.cancelConnect.Hide()
 	a.items.disconnect = systray.AddMenuItem("Disconnect", "Forget this computer's Chronicle sign-in")
 	a.items.disconnect.Hide()
 	a.items.update = systray.AddMenuItem("Update available", "")
@@ -139,6 +142,8 @@ func (a *app) onReady(ctx context.Context) {
 				}
 			case <-a.items.connect.ClickedCh:
 				go a.connect(ctx)
+			case <-a.items.cancelConnect.ClickedCh:
+				a.cancelPairing()
 			case <-a.items.disconnect.ClickedCh:
 				go a.disconnect(ctx)
 			case <-a.items.update.ClickedCh:
@@ -664,12 +669,15 @@ func (a *app) render() {
 	switch {
 	case a.pairing:
 		a.items.connect.Hide()
+		a.items.cancelConnect.Show()
 		a.items.disconnect.Hide()
 	case s.State == engine.StateReconnect:
 		a.items.connect.Show()
+		a.items.cancelConnect.Hide()
 		a.items.disconnect.Hide()
 	default:
 		a.items.connect.Hide()
+		a.items.cancelConnect.Hide()
 		a.items.disconnect.Show()
 	}
 	switch {
@@ -762,50 +770,93 @@ func (a *app) accessToken(ctx context.Context) (string, error) {
 
 // connect runs the browser pairing flow.
 func (a *app) connect(ctx context.Context) {
+	pairCtx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
 	if a.pairing {
 		a.mu.Unlock()
+		cancel()
 		return
 	}
 	a.pairing = true
+	a.pairCancel = cancel
 	a.pairCode = ""
 	a.pairMsg = ""
 	a.mu.Unlock()
 	a.render()
 
-	msg := a.pair(ctx)
+	msg := a.pair(pairCtx)
+	cancel()
 
 	a.mu.Lock()
 	a.pairing = false
+	a.pairCancel = nil
 	a.pairCode = ""
 	a.pairMsg = msg
 	a.mu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	a.render()
 	a.engine.TokenChanged()
 	go a.reportStatusOnce(ctx)
+}
+
+func (a *app) cancelPairing() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pairCancel != nil {
+		a.pairCancel()
+	}
+}
+
+// beginPairingCommit makes approval and cancellation mutually exclusive. Once
+// it succeeds, a later Cancel connection click cannot discard an approved token.
+func (a *app) beginPairingCommit(ctx context.Context) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	a.pairCancel = nil
+	return true
 }
 
 // pair returns a failure message, or "" when connected.
 func (a *app) pair(ctx context.Context) string {
 	c := a.pairClient()
 	start, err := c.Start(ctx)
+	if errors.Is(err, context.Canceled) {
+		return "Pairing canceled"
+	}
 	if err != nil {
 		a.logger.Error("OAuth device authorization", "err", err)
 		notify("Chronicle", "Couldn't reach Chronicle. Check your connection and try again.")
 		return "Couldn't reach Chronicle, try again"
 	}
+	if ctx.Err() != nil {
+		return "Pairing canceled"
+	}
 	a.mu.Lock()
 	a.pairCode = start.UserCode
 	a.mu.Unlock()
 	a.render()
+	if ctx.Err() != nil {
+		return "Pairing canceled"
+	}
 	openURL(pair.VerificationURL(start))
 
 	outcome, token, err := c.Wait(ctx, start)
+	if errors.Is(err, context.Canceled) {
+		return "Pairing canceled"
+	}
 	if err != nil {
 		a.logger.Warn("pair wait", "err", err)
 	}
 	switch {
 	case outcome == pair.Approved && err == nil:
+		if !a.beginPairingCommit(ctx) {
+			return "Pairing canceled"
+		}
 		if err := store.SaveToken(token); err != nil {
 			a.logger.Error("save OAuth token", "err", err)
 			notify("Chronicle", "Couldn't save the sign-in to your keychain.")
