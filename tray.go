@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +47,7 @@ type app struct {
 
 	updateLink    string
 	updateVersion string
+	settingsURL   string
 	updating      bool
 	pairing       bool               // a pairing is in flight
 	pairCancel    context.CancelFunc // cancels the active pairing request and poll
@@ -62,11 +65,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, version, upload, wows, report, connect, cancelConnect, disconnect, update, forceUpdate *systray.MenuItem
-	wowFolders                                                                                     map[string]wowMenuEntry
-	uploadEntries                                                                                  []wowMenuEntry
-	uploadDirs                                                                                     []string
-	uploadCount                                                                                    int
+	status, version, upload, wows, report, settings, connect, cancelConnect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                                                               map[string]wowMenuEntry
+	uploadEntries                                                                                            []wowMenuEntry
+	uploadDirs                                                                                               []string
+	uploadCount                                                                                              int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -90,6 +93,8 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.upload = systray.AddMenuItem("Upload now", "Upload combat logs")
 	a.items.report = systray.AddMenuItem("Open last report", "")
 	a.items.report.Disable()
+	a.items.settings = systray.AddMenuItem("View Settings…", "Manage Sidekick upload and archive settings on Chronicle")
+	a.items.settings.Disable()
 	a.items.connect = systray.AddMenuItem("Connect to Chronicle…", "")
 	a.items.connect.Hide()
 	a.items.cancelConnect = systray.AddMenuItem("Cancel connection", "Cancel the current browser sign-in and start over")
@@ -115,7 +120,6 @@ func (a *app) onReady(ctx context.Context) {
 	a.refreshUploadMenu(ctx)
 	choose := systray.AddMenuItem("Add WoW folder…", "Watch another World of Warcraft installation")
 	detectFolders := systray.AddMenuItem("Run automatic WoW detection…", "Scan common install locations and add any WoW folders found")
-	archive := systray.AddMenuItemCheckbox("Archive the log after upload", "Rename the combat log once it is uploaded so the next session starts a fresh one", !a.store.Get().KeepLog)
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit", "")
@@ -127,9 +131,9 @@ func (a *app) onReady(ctx context.Context) {
 
 	if a.stateDebug {
 		for _, item := range []*systray.MenuItem{
-			a.items.upload, a.items.report, a.items.connect, a.items.cancelConnect,
+			a.items.upload, a.items.report, a.items.settings, a.items.connect, a.items.cancelConnect,
 			a.items.disconnect, a.items.update, a.items.forceUpdate, a.items.wows,
-			choose, detectFolders, archive, login,
+			choose, detectFolders, login,
 		} {
 			item.Hide()
 		}
@@ -160,6 +164,13 @@ func (a *app) onReady(ctx context.Context) {
 				if u := a.current().ReportURL; u != "" {
 					openURL(u)
 				}
+			case <-a.items.settings.ClickedCh:
+				a.mu.Lock()
+				u := a.settingsURL
+				a.mu.Unlock()
+				if u != "" {
+					openURL(u)
+				}
 			case <-a.items.connect.ClickedCh:
 				go a.connect(ctx)
 			case <-a.items.cancelConnect.ClickedCh:
@@ -178,14 +189,6 @@ func (a *app) onReady(ctx context.Context) {
 				a.chooseFolder(ctx)
 			case <-detectFolders.ClickedCh:
 				a.detectWoWFolders(ctx)
-			case <-archive.ClickedCh:
-				on := !archive.Checked()
-				if err := a.store.Update(func(s *store.State) { s.KeepLog = !on }); err != nil {
-					a.logger.Error("archive after upload", "err", err)
-					notify("Chronicle", "Couldn't change archive-after-upload setting.")
-					continue
-				}
-				a.toggle(archive, on)
 			case <-login.ClickedCh:
 				on := !login.Checked()
 				exe, err := os.Executable()
@@ -265,6 +268,7 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 		a.logger.Warn("Sidekick status update", "err", err)
 		return
 	}
+	a.setSettingsURL(response.SettingsURL)
 	changed, err := reconcileConfig(a.store, response)
 	if err != nil {
 		a.logger.Warn("apply Sidekick config", "err", err)
@@ -272,6 +276,42 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	if changed {
 		a.logger.Info("synced Sidekick config", "config_hash", response.ConfigHash)
+	}
+}
+
+func resolveSettingsURL(baseURL, ref string) string {
+	if ref == "" {
+		return ""
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return ""
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	u = base.ResolveReference(u)
+	if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+		return ""
+	}
+	return u.String()
+}
+
+func (a *app) setSettingsURL(ref string) {
+	u := resolveSettingsURL(a.server, ref)
+	a.mu.Lock()
+	a.settingsURL = u
+	ready := a.ready
+	item := a.items.settings
+	a.mu.Unlock()
+	if !ready || item == nil {
+		return
+	}
+	if u == "" {
+		item.Disable()
+	} else {
+		item.Enable()
 	}
 }
 

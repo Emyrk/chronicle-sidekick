@@ -180,7 +180,7 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 		case f.Size != tr.size:
 			tr.size = f.Size
 			tr.grew = now
-			if !wowRunning && trig.OnExit {
+			if !wowRunning && trig.OnExit && trig.FinalizeAfter > 0 {
 				t.exitedAt[f.Path] = now
 			}
 		}
@@ -195,8 +195,8 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 			recording = true
 		}
 		failed := f.Size == tr.failed
-		exitReady := false
-		if trig.OnExit && !wowRunning {
+		exitReady := trig.OnExit && trig.FinalizeAfter <= 0 && exited
+		if trig.OnExit && trig.FinalizeAfter > 0 && !wowRunning {
 			if at := t.exitedAt[f.Path]; !at.IsZero() {
 				exitReady = now.Sub(at) >= trig.FinalizeAfter
 				if !exitReady {

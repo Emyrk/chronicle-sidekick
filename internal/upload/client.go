@@ -115,8 +115,8 @@ type Client struct {
 	AppendLogID   string
 	UploadID      string
 	ChunkSequence int
-	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included on
-	// initial upload-v2 requests.
+	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included with
+	// initial uploads and appends.
 	SidekickStoragePath string
 	// Token returns the current bearer token ("" when signed out).
 	Token string
@@ -161,7 +161,7 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 	defer func() { _ = f.Close() }()
 
 	var storage io.Reader
-	if c.AppendLogID == "" && c.SidekickStoragePath != "" {
+	if c.SidekickStoragePath != "" {
 		storageFile, err := os.Open(c.SidekickStoragePath)
 		if err != nil {
 			return Result{}, err

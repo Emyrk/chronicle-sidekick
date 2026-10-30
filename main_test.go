@@ -65,6 +65,7 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	id := sidekick.DirectoryID(dir)
 	config := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
+		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 			id: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
@@ -105,6 +106,7 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 		s.WoWPathsSet = true
 		s.Config = sidekick.SidekickConfig{
 			Version: sidekick.CurrentConfigVersion,
+			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 				sidekick.DirectoryID(dir): {
 					GameFormat: sidekick.GameFormatWrath335a,
@@ -119,6 +121,15 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 	require.Equal(t, sidekick.GameFormatWrath335a, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
+func TestResolveSettingsURL(t *testing.T) {
+	t.Parallel()
+	const base = "https://chronicle.example"
+	require.Equal(t, "https://chronicle.example/settings/sidekick", resolveSettingsURL(base, "/settings/sidekick"))
+	require.Equal(t, "https://chronicle.example/settings/sidekick", resolveSettingsURL(base, "https://chronicle.example/settings/sidekick"))
+	require.Empty(t, resolveSettingsURL(base, "https://evil.example/settings"))
+	require.Empty(t, resolveSettingsURL(base, "javascript:alert(1)"))
+}
+
 func TestReconcileConfigPersistsMismatch(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -127,6 +138,7 @@ func TestReconcileConfigPersistsMismatch(t *testing.T) {
 	directoryID := sidekick.DirectoryID("/wow/warmane")
 	cfg := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
+		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
@@ -152,7 +164,7 @@ func TestReconcileConfigToleratesAbsentConfig(t *testing.T) {
 	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "desired"})
 	require.NoError(t, err)
 	require.False(t, changed)
-	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
+	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", st.Get().EffectiveConfigHash())
 }
 
 func TestReconcileConfigRejectsUnknownVersion(t *testing.T) {
@@ -164,7 +176,7 @@ func TestReconcileConfigRejectsUnknownVersion(t *testing.T) {
 	changed, err := reconcileConfig(st, sidekick.UpdateResponse{ConfigHash: "future", Config: &cfg})
 	require.ErrorContains(t, err, "unsupported Sidekick config version")
 	require.False(t, changed)
-	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
+	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", st.Get().EffectiveConfigHash())
 }
 
 func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
@@ -174,6 +186,7 @@ func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
 	directoryID := sidekick.DirectoryID("/wow/warmane")
 	cfg := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
+		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
@@ -183,7 +196,7 @@ func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
 	require.ErrorContains(t, err, "config hash mismatch")
 	require.False(t, changed)
 	require.Empty(t, st.Get().EffectiveConfig().WoWDirectories)
-	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", st.Get().EffectiveConfigHash())
+	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", st.Get().EffectiveConfigHash())
 }
 
 func TestWoWFolderErrorIsActionable(t *testing.T) {

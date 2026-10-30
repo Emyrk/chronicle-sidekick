@@ -54,6 +54,8 @@ func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
 	invalidRetention.Archive.RetentionDays = 366
 	require.ErrorContains(t, invalidRetention.Validate(), "between 1 and 365")
 	invalidRetention.Archive.Enabled = false
+	require.ErrorContains(t, invalidRetention.Validate(), "between 1 and 365")
+	invalidRetention.Archive.RetentionDays = 7
 	require.NoError(t, invalidRetention.Validate())
 }
 

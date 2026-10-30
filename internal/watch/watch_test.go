@@ -53,6 +53,27 @@ func TestTracker(t *testing.T) {
 		require.Empty(t, up)
 	})
 
+	t.Run("exit waits for finalization and resets after a write", func(t *testing.T) {
+		t.Parallel()
+		tr := watch.NewTracker(nil)
+		trigger := watch.Trigger{OnExit: true, FinalizeAfter: 30 * time.Second, IdleAfter: idle}
+		tr.Observe(t0, log(100), true, false, trigger)
+
+		up, _ := tr.Observe(t0.Add(time.Minute), log(100), false, false, trigger)
+		require.Empty(t, up)
+		require.True(t, tr.Finalizing())
+		up, _ = tr.Observe(t0.Add(time.Minute+29*time.Second), log(100), false, false, trigger)
+		require.Empty(t, up)
+
+		// A late flush restarts the settling period.
+		up, _ = tr.Observe(t0.Add(time.Minute+30*time.Second), log(120), false, false, trigger)
+		require.Empty(t, up)
+		require.True(t, tr.Finalizing())
+		up, _ = tr.Observe(t0.Add(2*time.Minute), log(120), false, false, trigger)
+		require.Equal(t, log(120), up)
+		require.False(t, tr.Finalizing())
+	})
+
 	t.Run("idle trigger", func(t *testing.T) {
 		t.Parallel()
 		tr := watch.NewTracker(nil)

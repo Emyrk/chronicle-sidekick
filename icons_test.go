@@ -15,7 +15,7 @@ import (
 )
 
 var allStates = []engine.State{engine.StateIdle, engine.StateNoLog, engine.StateWaiting,
-	engine.StateRecording, engine.StateUploading, engine.StateUploaded, engine.StateReconnect}
+	engine.StateRecording, engine.StateFinalizing, engine.StateUploading, engine.StateUploaded, engine.StateReconnect}
 
 func nrgbaAt(img image.Image, x, y int) color.NRGBA {
 	return color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
@@ -60,13 +60,14 @@ func checkIcon(t *testing.T, s engine.State, img image.Image, body image.Image, 
 func TestStateColors(t *testing.T) {
 	t.Parallel()
 	want := map[engine.State]color.NRGBA{
-		engine.StateIdle:      {0x9c, 0xa3, 0xaf, 0xff},
-		engine.StateNoLog:     {0xf4, 0x3f, 0x5e, 0xff},
-		engine.StateWaiting:   {0xfb, 0x92, 0x3c, 0xff},
-		engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff},
-		engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff},
-		engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff},
-		engine.StateReconnect: {0xfa, 0xcc, 0x15, 0xff},
+		engine.StateIdle:       {0x9c, 0xa3, 0xaf, 0xff},
+		engine.StateNoLog:      {0xf4, 0x3f, 0x5e, 0xff},
+		engine.StateWaiting:    {0xfb, 0x92, 0x3c, 0xff},
+		engine.StateRecording:  {0x22, 0xc5, 0x5e, 0xff},
+		engine.StateFinalizing: {0xa8, 0x55, 0xf7, 0xff},
+		engine.StateUploading:  {0x3b, 0x82, 0xf6, 0xff},
+		engine.StateUploaded:   {0x22, 0xc5, 0x5e, 0xff},
+		engine.StateReconnect:  {0xfa, 0xcc, 0x15, 0xff},
 	}
 	require.Equal(t, want, stateColors)
 }
@@ -102,7 +103,7 @@ func TestTrayIconShowsBrightStateDot(t *testing.T) {
 	}
 }
 
-// TestContactSheet writes the proof sheet to $UPLOADER_ICON_SHEET: six states
+// TestContactSheet writes the proof sheet to $UPLOADER_ICON_SHEET: seven states
 // (uploaded shares green with recording) on a light and a dark menu bar, at
 // 36 px and at 4x. Skipped unless the variable is set; not committed.
 func TestContactSheet(t *testing.T) {
@@ -111,7 +112,7 @@ func TestContactSheet(t *testing.T) {
 		t.Skip("UPLOADER_ICON_SHEET not set")
 	}
 	states := []engine.State{engine.StateIdle, engine.StateNoLog, engine.StateWaiting,
-		engine.StateRecording, engine.StateUploading, engine.StateReconnect}
+		engine.StateRecording, engine.StateFinalizing, engine.StateUploading, engine.StateReconnect}
 	const cell, pad = 36 * 4, 12
 	w := pad + len(states)*(cell+pad)
 	rowH := 36 + pad + cell + pad
