@@ -34,6 +34,8 @@ const (
 	StateWaiting
 	// StateRecording: the combat log is growing.
 	StateRecording
+	// StateFinalizing: WoW exited and Sidekick is waiting for the log to settle.
+	StateFinalizing
 	// StateUploading: a log is being sent (or waiting to retry offline).
 	StateUploading
 	// StateUploaded: a log was just uploaded.
@@ -139,6 +141,8 @@ type job struct {
 	size    int64
 	baseURL string
 }
+
+const exitFinalizeAfter = 30 * time.Second
 
 const uploadedStickiness = time.Minute
 
@@ -293,6 +297,9 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 				if e.cfg.AutoUpload != nil {
 					trigger = e.cfg.AutoUpload(in)
 					trigger.IdleAfter = e.cfg.IdleAfter
+					if trigger.OnExit {
+						trigger.FinalizeAfter = exitFinalizeAfter
+					}
 				}
 				triggers[f.Path] = trigger
 				break
@@ -375,7 +382,7 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 		return // the worker owns the status until it is done
 	}
 	rejected := token != "" && token == e.rejectedToken
-	e.setStatus(e.baseline(now, len(installs) > 0, running, recording, logging, needAuth, rejected))
+	e.setStatus(e.baseline(now, len(installs) > 0, running, recording, e.tracker.Finalizing(), logging, needAuth, rejected))
 }
 
 // currentDestination re-reads the configured installs immediately before an
@@ -461,7 +468,7 @@ func (e *Engine) currentToken(now time.Time) string {
 	return e.token
 }
 
-func (e *Engine) baseline(now time.Time, haveInstall, running, recording, logging, needAuth, rejected bool) Status {
+func (e *Engine) baseline(now time.Time, haveInstall, running, recording, finalizing, logging, needAuth, rejected bool) Status {
 	last := e.status.ReportURL
 	switch {
 	case rejected:
@@ -470,6 +477,8 @@ func (e *Engine) baseline(now time.Time, haveInstall, running, recording, loggin
 		return Status{State: StateReconnect, Detail: "Not connected. Connect to Chronicle to upload your logs.", ReportURL: last}
 	case now.Before(e.uploadedUntil):
 		return e.lastUploaded
+	case finalizing:
+		return Status{State: StateFinalizing, Detail: "Finalizing your combat log…", ReportURL: last}
 	case recording:
 		return Status{State: StateRecording, Detail: "Recording your combat log.", ReportURL: last}
 	case running && logging:

@@ -26,6 +26,7 @@ func TestStateDebugSequence(t *testing.T) {
 		{State: engine.StateNoLog, Detail: "Red: Combat logging not detected"},
 		{State: engine.StateWaiting, Detail: "Orange: Combat logging started, waiting for data"},
 		{State: engine.StateRecording, Detail: "Green: Combat log receiving data"},
+		{State: engine.StateFinalizing, Detail: "Purple: Finalizing combat log"},
 		{State: engine.StateUploading, Detail: "Blue: Uploading or retrying"},
 		{State: engine.StateReconnect, Detail: "Yellow: Chronicle sign-in required"},
 	}, stateDebugStatuses)

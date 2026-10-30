@@ -88,8 +88,11 @@ func IsArchive(path string) bool {
 // Trigger configures which events queue a log for upload. A manual request is
 // passed to Observe directly.
 type Trigger struct {
-	// OnExit uploads when the WoW process exits.
+	// OnExit uploads after the WoW process exits and the file settles.
 	OnExit bool
+	// FinalizeAfter is the minimum time after both process exit and the last
+	// observed write before an OnExit upload is queued.
+	FinalizeAfter time.Duration
 	// OnIdle uploads once the log has not grown for IdleAfter.
 	OnIdle    bool
 	IdleAfter time.Duration
@@ -109,13 +112,15 @@ type Tracker struct {
 	files      map[string]*track
 	seeded     bool
 	wasRunning map[string]bool
+	exitedAt   map[string]time.Time
 	recording  bool
+	finalizing bool
 }
 
 // NewTracker returns a Tracker. uploaded maps a log path to the size that was
 // already uploaded in a previous run.
 func NewTracker(uploaded map[string]int64) *Tracker {
-	t := &Tracker{files: map[string]*track{}, wasRunning: map[string]bool{}}
+	t := &Tracker{files: map[string]*track{}, wasRunning: map[string]bool{}, exitedAt: map[string]time.Time{}}
 	for p, size := range uploaded {
 		t.files[p] = &track{size: size, uploaded: size, failed: -1}
 	}
@@ -144,6 +149,7 @@ func (t *Tracker) ObserveSelected(now time.Time, files []File, wowRunning bool, 
 // ObserveConfigured applies potentially different triggers and game lifecycle
 // states to each file.
 func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(File) bool, triggerFor func(File) Trigger, runningFor func(File) bool) (upload []File, recording bool) {
+	t.finalizing = false
 	for _, f := range files {
 		trig := Trigger{}
 		if triggerFor != nil {
@@ -157,6 +163,11 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 		// it picks up a log left over from a session that ended while Sidekick was off.
 		exited := !wowRunning && (!t.seeded || t.wasRunning[f.Path])
 		t.wasRunning[f.Path] = wowRunning
+		if wowRunning {
+			delete(t.exitedAt, f.Path)
+		} else if exited {
+			t.exitedAt[f.Path] = now
+		}
 		tr := t.files[f.Path]
 		switch {
 		case tr == nil:
@@ -169,6 +180,9 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 		case f.Size != tr.size:
 			tr.size = f.Size
 			tr.grew = now
+			if !wowRunning && trig.OnExit {
+				t.exitedAt[f.Path] = now
+			}
 		}
 
 		dirty := f.Size > 0 && f.Size != tr.uploaded
@@ -181,12 +195,21 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 			recording = true
 		}
 		failed := f.Size == tr.failed
+		exitReady := false
+		if trig.OnExit && !wowRunning {
+			if at := t.exitedAt[f.Path]; !at.IsZero() {
+				exitReady = now.Sub(at) >= trig.FinalizeAfter
+				if !exitReady {
+					t.finalizing = true
+				}
+			}
+		}
 		switch {
 		case manual != nil && manual(f):
 			tr.queued = true
 		case failed:
 			// Don't retry a permanent failure until the log changes.
-		case trig.OnExit && exited, trig.OnIdle && idle:
+		case trig.OnExit && exitReady, trig.OnIdle && idle:
 			tr.queued = true
 		}
 		if tr.queued {
@@ -197,6 +220,10 @@ func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(Fil
 	t.recording = recording
 	return upload, recording
 }
+
+// Finalizing reports whether at least one dirty on-exit log is still in its
+// post-exit settling period.
+func (t *Tracker) Finalizing() bool { return t.finalizing }
 
 // CreatedSince reports whether a log file appeared after the helper started
 // watching and at or after since. A file that was already there is never

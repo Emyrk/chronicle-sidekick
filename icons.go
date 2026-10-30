@@ -36,13 +36,14 @@ var (
 )
 
 var stateColors = map[engine.State]color.NRGBA{
-	engine.StateIdle:      {0x9c, 0xa3, 0xaf, 0xff}, // gray: waiting for WoW
-	engine.StateNoLog:     {0xf4, 0x3f, 0x5e, 0xff}, // red: combat logging not detected
-	engine.StateWaiting:   {0xfb, 0x92, 0x3c, 0xff}, // orange: combat logging started, waiting for data
-	engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff}, // green: combat log receiving data
-	engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff}, // blue: uploading or retrying
-	engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff}, // green: upload complete
-	engine.StateReconnect: {0xfa, 0xcc, 0x15, 0xff}, // yellow: Chronicle sign-in required
+	engine.StateIdle:       {0x9c, 0xa3, 0xaf, 0xff}, // gray: waiting for WoW
+	engine.StateNoLog:      {0xf4, 0x3f, 0x5e, 0xff}, // red: combat logging not detected
+	engine.StateWaiting:    {0xfb, 0x92, 0x3c, 0xff}, // orange: combat logging started, waiting for data
+	engine.StateRecording:  {0x22, 0xc5, 0x5e, 0xff}, // green: combat log receiving data
+	engine.StateFinalizing: {0xa8, 0x55, 0xf7, 0xff}, // purple: finalizing combat log
+	engine.StateUploading:  {0x3b, 0x82, 0xf6, 0xff}, // blue: uploading or retrying
+	engine.StateUploaded:   {0x22, 0xc5, 0x5e, 0xff}, // green: upload complete
+	engine.StateReconnect:  {0xfa, 0xcc, 0x15, 0xff}, // yellow: Chronicle sign-in required
 }
 
 var logoGold = color.NRGBA{R: 0xd7, G: 0xb6, B: 0x6f, A: 0xff}
