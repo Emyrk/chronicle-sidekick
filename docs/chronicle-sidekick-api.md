@@ -52,6 +52,18 @@ ignored. Chronicle should return `settings_url` on every successful heartbeat,
 including responses where managed configuration is unchanged, so the tray's
 **View Settings…** action remains available.
 
+## Reported issues
+
+Each heartbeat replaces the installation's complete `issues` snapshot. Sidekick
+reports an `upload_failed` issue as soon as Chronicle answers an upload with a
+retryable HTTP server error. The issue is persisted across Sidekick restarts and
+remains active until a combat log upload succeeds. The next heartbeat, sent at
+most one minute later, removes the resolved issue from the settings page.
+
+Issue details are sanitized before reporting. They include the HTTP status code
+and standard status text, but never local file paths or arbitrary server response
+bodies.
+
 ## Initial upload and append
 
 Initial uploads continue to use:

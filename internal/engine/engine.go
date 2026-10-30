@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -941,6 +942,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 			e.cfg.Notify("Chronicle", "Chronicle needs you to sign in again.")
 			return true, j
 		case errors.As(err, &serverErr) && upload.Retryable(err):
+			e.reportUploadIssue(err)
 			if serverWaited >= e.cfg.ServerRetryFor {
 				log.Error("giving up on server errors", "err", err, "waited", serverWaited)
 				e.fail(j, err)
@@ -1024,6 +1026,7 @@ func (e *Engine) skip(j job, src string, size int64, reportURL string) {
 		if reportURL != "" {
 			s.LastReportURL = reportURL
 		}
+		s.Issues = clearIssue(s.Issues, uploadIssueCode)
 	})
 	if err != nil {
 		e.cfg.Logger.Warn("saving state", "err", err)
@@ -1046,11 +1049,57 @@ func (e *Engine) retryStatus(detail string) {
 	e.setStatus(Status{State: StateUploading, Detail: detail, ReportURL: e.status.ReportURL})
 }
 
+const uploadIssueCode = "upload_failed"
+
+func uploadIssue(err error) sidekick.Issue {
+	issue := sidekick.Issue{
+		Code:    uploadIssueCode,
+		Message: "A combat log upload failed.",
+		Details: "Try uploading the log again.",
+	}
+	var serverErr *upload.Error
+	if errors.As(err, &serverErr) {
+		status := http.StatusText(serverErr.Status)
+		if status == "" {
+			issue.Details = fmt.Sprintf("Chronicle returned HTTP %d.", serverErr.Status)
+		} else {
+			issue.Details = fmt.Sprintf("Chronicle returned HTTP %d (%s).", serverErr.Status, status)
+		}
+	}
+	return issue
+}
+
+func (e *Engine) reportUploadIssue(err error) {
+	issue := uploadIssue(err)
+	if saveErr := e.cfg.Store.Update(func(s *store.State) {
+		for i := range s.Issues {
+			if s.Issues[i].Code == issue.Code {
+				s.Issues[i] = issue
+				return
+			}
+		}
+		s.Issues = append(s.Issues, issue)
+	}); saveErr != nil {
+		e.cfg.Logger.Warn("saving Sidekick issue", "err", saveErr)
+	}
+}
+
+func clearIssue(issues []sidekick.Issue, code string) []sidekick.Issue {
+	kept := issues[:0]
+	for _, issue := range issues {
+		if issue.Code != code {
+			kept = append(kept, issue)
+		}
+	}
+	return kept
+}
+
 // fail records a permanent failure and tells the user once.
 func (e *Engine) fail(j job, err error) {
 	e.mu.Lock()
 	e.tracker.MarkFailed(j.path, j.size)
 	e.mu.Unlock()
+	e.reportUploadIssue(err)
 	e.cfg.Notify("Chronicle upload failed", err.Error())
 }
 
@@ -1074,6 +1123,7 @@ func (e *Engine) finish(f job, src string, res upload.Result) {
 		if res.ReportURL != "" {
 			s.LastReportURL = res.ReportURL
 		}
+		s.Issues = clearIssue(s.Issues, uploadIssueCode)
 	})
 	if err != nil {
 		e.cfg.Logger.Warn("saving state", "err", err)

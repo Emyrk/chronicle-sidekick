@@ -89,6 +89,27 @@ func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])
 }
 
+func TestIssuesRoundTripAndCopy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	issues := []sidekick.Issue{{
+		Code: "upload_failed", Message: "A combat log upload failed.",
+		Details: "Chronicle returned HTTP 500 (Internal Server Error).",
+	}}
+	require.NoError(t, s.Update(func(st *store.State) {
+		st.Issues = issues
+	}))
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.Equal(t, issues, again.Get().Issues)
+	copy := again.Get()
+	copy.Issues[0].Message = "changed"
+	require.Equal(t, issues, again.Get().Issues)
+}
+
 func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")

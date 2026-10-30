@@ -259,7 +259,7 @@ func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 	return watch.Trigger{}
 }
 
-func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, platform, appVersion string, startAtLogin bool) sidekick.Status {
+func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, issues []sidekick.Issue, platform, appVersion string, startAtLogin bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
 	}
@@ -279,7 +279,7 @@ func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, p
 		Platform: platform, SidekickVersion: appVersion,
 		StartAtLogin: startAtLogin, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: directories,
-		Issues:         []sidekick.Issue{},
+		Issues:         append([]sidekick.Issue(nil), issues...),
 	}
 }
 

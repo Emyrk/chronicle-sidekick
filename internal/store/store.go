@@ -48,6 +48,8 @@ type State struct {
 	// keyed by path and forgotten when the file is renamed or moved, the ledger
 	// is what keeps a log the server already has from being sent again.
 	Logs map[string]Log `json:"logs,omitempty"`
+	// Issues are currently active, sanitized problems reported to Chronicle.
+	Issues []sidekick.Issue `json:"issues,omitempty"`
 	// LastReportURL is the most recent report, for the tray menu.
 	LastReportURL string `json:"last_report_url,omitempty"`
 }
@@ -161,6 +163,7 @@ func (s *Store) Get() State {
 	defer s.mu.Unlock()
 	cp := s.st
 	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
+	cp.Issues = append([]sidekick.Issue(nil), s.st.Issues...)
 	cp.ArchiveGroups = make(map[string]ArchiveGroup, len(s.st.ArchiveGroups))
 	for k, v := range s.st.ArchiveGroups {
 		v.Files = append([]string(nil), v.Files...)

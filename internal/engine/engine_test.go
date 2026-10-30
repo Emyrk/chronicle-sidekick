@@ -397,6 +397,10 @@ func TestEngineGivesUpOnServerErrors(t *testing.T) {
 	h.step(t, t0, true)
 	require.Equal(t, 6, h.uploads)
 	require.Equal(t, []string{"Chronicle upload failed"}, h.notified)
+	require.Equal(t, []sidekick.Issue{{
+		Code: "upload_failed", Message: "A combat log upload failed.",
+		Details: "Chronicle returned HTTP 503 (Service Unavailable).",
+	}}, h.st.Get().Issues)
 
 	// Failed for this size: nothing is sent until the log changes.
 	h.step(t, t0.Add(10*time.Minute), false)
@@ -407,6 +411,7 @@ func TestEngineGivesUpOnServerErrors(t *testing.T) {
 	h.step(t, t0.Add(20*time.Minute), false) // sees the growth
 	h.step(t, t0.Add(30*time.Minute), true)  // the user retries the changed log
 	require.Equal(t, 7, h.uploads)
+	require.Empty(t, h.st.Get().Issues)
 }
 
 func TestEngineStepDoesNotWaitForUpload(t *testing.T) {

@@ -70,10 +70,11 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 			id: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
+	issues := []sidekick.Issue{{Code: "upload_failed", Message: "A combat log upload failed."}}
 	status := sidekickStatus([]wowdir.Install{{
 		Flavor: "Warmane", Dir: dir,
 		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-	}}, config, "windows/amd64", "1.2.3", true)
+	}}, config, issues, "windows/amd64", "1.2.3", true)
 	require.Equal(t, sidekick.Status{
 		Platform: "windows/amd64", SidekickVersion: "1.2.3",
 		StartAtLogin: true, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
@@ -82,7 +83,7 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
 			GameFormat: sidekick.GameFormatWrath335a,
 		}},
-		Issues: []sidekick.Issue{},
+		Issues: issues,
 	}, status)
 }
 
@@ -92,7 +93,7 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	for i := range installs {
 		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
 	}
-	require.Len(t, sidekickStatus(installs, sidekick.DefaultConfig(), "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
+	require.Len(t, sidekickStatus(installs, sidekick.DefaultConfig(), nil, "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
 }
 
 func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
