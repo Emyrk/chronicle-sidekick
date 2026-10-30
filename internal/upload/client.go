@@ -16,10 +16,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
 	uploadPath = "/api/v1/raidlogs/logs/upload-v2"
+	appendPath = "/api/v1/raidlogs/logs/"
 	// sourcePath answers what the signed-in owner already holds under a source
 	// id, before any body is sent. The source id is appended to it.
 	sourcePath = "/api/v1/raidlogs/logs/by-source-id/"
@@ -27,7 +30,9 @@ const (
 	// sourceHeader carries the content-keyed id of the log (see Identify).
 	// A server that already has a group for it replaces that group rather
 	// than creating a second one.
-	sourceHeader = "X-Chronicle-Source-Id"
+	sourceHeader        = "X-Chronicle-Source-Id"
+	uploadIDHeader      = "X-Chronicle-Upload-ID"
+	chunkSequenceHeader = "X-Chronicle-Chunk-Sequence"
 )
 
 // Ping checks that baseURL serves the Chronicle API. Without credentials the
@@ -90,6 +95,8 @@ func Retryable(err error) bool {
 
 // Result is the outcome of one upload.
 type Result struct {
+	// LogID identifies the Chronicle log group that received the upload.
+	LogID string
 	// ReportURL is where the log can be viewed.
 	ReportURL string
 	// Duplicate is true when the server already had this exact file.
@@ -103,6 +110,14 @@ type Client struct {
 	// Format and Flavor are the tenant's upload-v2 parameters. The server
 	// does not sniff them; both are required.
 	Format, Flavor string
+	// AppendLogID adds this upload to an existing Chronicle log group. UploadID
+	// and a positive ChunkSequence are required when it is set.
+	AppendLogID   string
+	UploadID      string
+	ChunkSequence int
+	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included on
+	// initial upload-v2 requests.
+	SidekickStoragePath string
 	// Token returns the current bearer token ("" when signed out).
 	Token string
 	HTTP  *http.Client
@@ -131,16 +146,34 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 	if c.Token == "" {
 		return Result{}, ErrUnauthorized
 	}
+	if c.AppendLogID != "" {
+		if _, err := uuid.Parse(c.UploadID); err != nil {
+			return Result{}, fmt.Errorf("append upload requires a valid upload ID: %w", err)
+		}
+		if c.ChunkSequence < 1 {
+			return Result{}, errors.New("append upload requires a positive chunk sequence")
+		}
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return Result{}, err
 	}
 	defer func() { _ = f.Close() }()
 
+	var storage io.Reader
+	if c.AppendLogID == "" && c.SidekickStoragePath != "" {
+		storageFile, err := os.Open(c.SidekickStoragePath)
+		if err != nil {
+			return Result{}, err
+		}
+		defer func() { _ = storageFile.Close() }()
+		storage = storageFile
+	}
+
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 	go func() {
-		_ = pw.CloseWithError(writeForm(mw, f, size, filepath.Base(path), c.Fast))
+		_ = pw.CloseWithError(writeForm(mw, f, size, filepath.Base(path), c.Fast, storage, filepath.Base(c.SidekickStoragePath)))
 	}()
 
 	query := url.Values{}
@@ -151,6 +184,9 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 		query.Set("flavor", c.Flavor)
 	}
 	endpoint := strings.TrimRight(c.BaseURL, "/") + uploadPath
+	if c.AppendLogID != "" {
+		endpoint = strings.TrimRight(c.BaseURL, "/") + appendPath + url.PathEscape(c.AppendLogID) + "/append"
+	}
 	if encoded := query.Encode(); encoded != "" {
 		endpoint += "?" + encoded
 	}
@@ -163,6 +199,10 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	if sourceID != "" {
 		req.Header.Set(sourceHeader, sourceID)
+	}
+	if c.AppendLogID != "" {
+		req.Header.Set(uploadIDHeader, c.UploadID)
+		req.Header.Set(chunkSequenceHeader, fmt.Sprintf("%d", c.ChunkSequence))
 	}
 
 	httpc := c.HTTP
@@ -182,7 +222,7 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 
 	switch {
 	case resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK:
-		return Result{ReportURL: c.reportURL(out), Duplicate: out.Duplicate}, nil
+		return Result{LogID: out.LogID, ReportURL: c.reportURL(out), Duplicate: out.Duplicate}, nil
 	case resp.StatusCode == http.StatusUnauthorized:
 		return Result{}, ErrUnauthorized
 	case resp.StatusCode == http.StatusBadRequest && strings.Contains(out.Message, "already been uploaded"):
@@ -258,7 +298,7 @@ func (c *Client) Have(ctx context.Context, sourceID string) (Have, error) {
 	return Have{}, &Error{Status: resp.StatusCode, Message: msg}
 }
 
-func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fast bool) error {
+func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fast bool, storage io.Reader, storageName string) error {
 	// The ".gz" suffix is how the server knows the part is compressed.
 	h := textproto.MIMEHeader{}
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="combat_log"; filename="%s.gz"`, name))
@@ -280,6 +320,18 @@ func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fas
 	}
 	if err := zw.Close(); err != nil {
 		return err
+	}
+	if storage != nil {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="sidekick_storage"; filename="%s"`, storageName))
+		h.Set("Content-Type", "text/plain")
+		part, err := mw.CreatePart(h)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(part, storage); err != nil {
+			return err
+		}
 	}
 	return mw.Close()
 }

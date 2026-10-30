@@ -47,6 +47,7 @@ func TestUpload(t *testing.T) {
 		c, req, body := respond(201, `{"log_id":"abc","file_ids":[]}`)
 		res, err := c.Upload(context.Background(), path, "chr1-11-abcd", size)
 		require.NoError(t, err)
+		require.Equal(t, "abc", res.LogID)
 		require.Equal(t, c.BaseURL+"/logs/abc", res.ReportURL)
 		require.False(t, res.Duplicate)
 		require.Equal(t, "Bearer tok", req.Header.Get("Authorization"))
@@ -55,6 +56,63 @@ func TestUpload(t *testing.T) {
 		require.Equal(t, "vanilla,wow-forever", req.URL.Query().Get("flavor"))
 		require.Equal(t, "chr1-11-abcd", req.Header.Get("X-Chronicle-Source-Id"))
 		require.Len(t, *body, size)
+	})
+
+	t.Run("append", func(t *testing.T) {
+		t.Parallel()
+		c, req, _ := respond(200, `{"log_id":"group-id","url":"/logs/group-id"}`)
+		c.AppendLogID = "group-id"
+		c.UploadID = "550e8400-e29b-41d4-a716-446655440000"
+		c.ChunkSequence = 2
+		res, err := c.Upload(context.Background(), path, "chr1-11-abcd", size)
+		require.NoError(t, err)
+		require.Equal(t, "group-id", res.LogID)
+		require.Equal(t, "/api/v1/raidlogs/logs/group-id/append", req.URL.Path)
+		require.Equal(t, "550e8400-e29b-41d4-a716-446655440000", req.Header.Get("X-Chronicle-Upload-ID"))
+		require.Equal(t, "2", req.Header.Get("X-Chronicle-Chunk-Sequence"))
+		require.Equal(t, "v22-cleu", req.URL.Query().Get("format"))
+		require.Equal(t, "vanilla,wow-forever", req.URL.Query().Get("flavor"))
+	})
+
+	t.Run("append validates upload identity", func(t *testing.T) {
+		t.Parallel()
+		c := &upload.Client{BaseURL: "http://127.0.0.1:1", Token: "tok", AppendLogID: "abc"}
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.ErrorContains(t, err, "valid upload ID")
+
+		c.UploadID = "not-a-uuid"
+		_, err = c.Upload(context.Background(), path, "", size)
+		require.ErrorContains(t, err, "valid upload ID")
+
+		c.UploadID = "550e8400-e29b-41d4-a716-446655440000"
+		_, err = c.Upload(context.Background(), path, "", size)
+		require.ErrorContains(t, err, "positive chunk sequence")
+	})
+
+	t.Run("sidekick storage", func(t *testing.T) {
+		t.Parallel()
+		storagePath := filepath.Join(t.TempDir(), "Chronicle.lua")
+		require.NoError(t, os.WriteFile(storagePath, []byte("ChronicleDB = {}"), 0o644))
+		var content, filename, contentType string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseMultipartForm(1<<20))
+			f, h, err := r.FormFile("sidekick_storage")
+			require.NoError(t, err)
+			b, err := io.ReadAll(f)
+			require.NoError(t, err)
+			content = string(b)
+			filename = h.Filename
+			contentType = h.Header.Get("Content-Type")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"log_id":"abc"}`))
+		}))
+		t.Cleanup(srv.Close)
+		c := &upload.Client{BaseURL: srv.URL, Token: "tok", SidekickStoragePath: storagePath}
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.NoError(t, err)
+		require.Equal(t, "ChronicleDB = {}", content)
+		require.Equal(t, "Chronicle.lua", filename)
+		require.Equal(t, "text/plain", contentType)
 	})
 
 	t.Run("tenant defaults need no parse query", func(t *testing.T) {

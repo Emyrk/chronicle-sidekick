@@ -16,19 +16,20 @@ func TestHashConfig(t *testing.T) {
 	t.Parallel()
 	canonical, err := sidekick.CanonicalConfigJSON(sidekick.DefaultConfig())
 	require.NoError(t, err)
-	require.JSONEq(t, `{"version":1,"wow_directories":{}}`, string(canonical))
-	require.Equal(t, `{"version":1,"wow_directories":{}}`, string(canonical))
+	require.JSONEq(t, `{"version":1,"archive":{"enabled":true,"retention_days":7},"wow_directories":{}}`, string(canonical))
+	require.Equal(t, `{"version":1,"archive":{"enabled":true,"retention_days":7},"wow_directories":{}}`, string(canonical))
 	require.NotContains(t, string(canonical), "start_at_login")
 
 	hash, err := sidekick.HashConfig(sidekick.DefaultConfig())
 	require.NoError(t, err)
-	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", hash)
+	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", hash)
 }
 
 func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
 	t.Parallel()
 	valid := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
+		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
@@ -46,6 +47,14 @@ func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
 		"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: "future"},
 	}
 	require.ErrorContains(t, unknownMode.Validate(), "unsupported auto-upload mode")
+
+	invalidRetention := valid
+	invalidRetention.Archive.RetentionDays = 0
+	require.ErrorContains(t, invalidRetention.Validate(), "between 1 and 365")
+	invalidRetention.Archive.RetentionDays = 366
+	require.ErrorContains(t, invalidRetention.Validate(), "between 1 and 365")
+	invalidRetention.Archive.Enabled = false
+	require.NoError(t, invalidRetention.Validate())
 }
 
 func TestStatusAlwaysSerializesLocalSettings(t *testing.T) {
@@ -76,9 +85,11 @@ func TestUpdate(t *testing.T) {
 		requests <- got
 		_ = json.NewEncoder(w).Encode(sidekick.UpdateResponse{
 			Installation: json.RawMessage(`{"id":"installation-1"}`),
+			SettingsURL:  "https://chronicle.example/settings/sidekick",
 			ConfigHash:   "hash-2",
 			Config: &sidekick.SidekickConfig{
 				Version: sidekick.CurrentConfigVersion,
+				Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 30},
 				WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 					"wowdir_1": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 				},
@@ -102,6 +113,7 @@ func TestUpdate(t *testing.T) {
 	response, err := client.Update(context.Background(), status)
 	require.NoError(t, err)
 	require.Equal(t, "hash-2", response.ConfigHash)
+	require.Equal(t, "https://chronicle.example/settings/sidekick", response.SettingsURL)
 	require.NotNil(t, response.Config)
 	require.Equal(t, sidekick.AutoUploadOnGameExit, response.Config.WoWDirectories["wowdir_1"].AutoUpload)
 	request := <-requests

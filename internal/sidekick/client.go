@@ -74,15 +74,26 @@ type WoWDirectoryConfig struct {
 	AutoUpload AutoUploadMode `json:"auto_upload"`
 }
 
+// ArchivePolicy controls local retention of successfully uploaded combat logs.
+type ArchivePolicy struct {
+	Enabled       bool `json:"enabled"`
+	RetentionDays int  `json:"retention_days"`
+}
+
 // SidekickConfig is the server-managed behavior applied by Sidekick.
 type SidekickConfig struct {
 	Version        int                           `json:"version"`
+	Archive        ArchivePolicy                 `json:"archive"`
 	WoWDirectories map[string]WoWDirectoryConfig `json:"wow_directories"`
 }
 
 // DefaultConfig is the behavior used before Chronicle has sent a config.
 func DefaultConfig() SidekickConfig {
-	return SidekickConfig{Version: CurrentConfigVersion, WoWDirectories: map[string]WoWDirectoryConfig{}}
+	return SidekickConfig{
+		Version:        CurrentConfigVersion,
+		Archive:        ArchivePolicy{Enabled: true, RetentionDays: 7},
+		WoWDirectories: map[string]WoWDirectoryConfig{},
+	}
 }
 
 // AutoUploadCapabilities lists the implementations in this Sidekick build.
@@ -113,6 +124,9 @@ func HashConfig(config SidekickConfig) (string, error) {
 func (c SidekickConfig) Validate() error {
 	if c.Version != CurrentConfigVersion {
 		return fmt.Errorf("unsupported Sidekick config version %d", c.Version)
+	}
+	if c.Archive.Enabled && (c.Archive.RetentionDays < 1 || c.Archive.RetentionDays > 365) {
+		return fmt.Errorf("archive retention days must be between 1 and 365")
 	}
 	capabilities := AutoUploadCapabilities()
 	for id, directory := range c.WoWDirectories {
@@ -154,6 +168,7 @@ type Status struct {
 // the server's installation representation.
 type UpdateResponse struct {
 	Installation json.RawMessage `json:"installation,omitempty"`
+	SettingsURL  string          `json:"settings_url,omitempty"`
 	ConfigHash   string          `json:"config_hash,omitempty"`
 	Config       *SidekickConfig `json:"config,omitempty"`
 }

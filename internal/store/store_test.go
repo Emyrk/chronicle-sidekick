@@ -32,6 +32,42 @@ func TestLedgerRoundTrip(t *testing.T) {
 	require.Equal(t, int64(10), again.Get().Logs["chr1-1-aa"].Size)
 }
 
+func TestArchiveGroupsRoundTripAndCopy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	group := store.ArchiveGroup{
+		ID:               "group-1",
+		InstallDirectory: "/wow",
+		InstallID:        "wowdir_1",
+		LogID:            "log-1",
+		ReportURL:        "https://x/logs/1",
+		CreatedAt:        now,
+		LastExitAt:       now.Add(time.Minute),
+		LastSuccessAt:    now.Add(2 * time.Minute),
+		DeleteAfter:      now.Add(7 * 24 * time.Hour),
+		Pending:          true,
+		Files:            []string{"/wow/Logs/WoWCombatLog.txt", "/wow/WTF/Chronicle.lua"},
+	}
+	require.NoError(t, s.Update(func(st *store.State) {
+		st.ArchiveGroups = map[string]store.ArchiveGroup{group.ID: group}
+	}))
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.Equal(t, group, again.Get().ArchiveGroups[group.ID])
+
+	copy := again.Get()
+	copy.ArchiveGroups[group.ID] = store.ArchiveGroup{}
+	require.Equal(t, group, again.Get().ArchiveGroups[group.ID])
+	copy = again.Get()
+	copyGroup := copy.ArchiveGroups[group.ID]
+	copyGroup.Files[0] = "/changed"
+	require.Equal(t, group.Files[0], again.Get().ArchiveGroups[group.ID].Files[0])
+}
+
 func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -59,7 +95,11 @@ func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
 	s, err := store.Open(path)
 	require.NoError(t, err)
 	require.Empty(t, s.Get().EffectiveConfig().WoWDirectories)
-	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", s.Get().EffectiveConfigHash())
+	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", s.Get().EffectiveConfigHash())
+	require.NoError(t, s.Update(func(*store.State) {}))
+	persisted, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NotContains(t, string(persisted), "keep_log")
 }
 
 func TestManagedConfigRoundTrip(t *testing.T) {
@@ -69,6 +109,7 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	cfg := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
+		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 14},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
 			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
@@ -80,7 +121,9 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, cfg, again.Get().EffectiveConfig())
-	require.Equal(t, "9874d12791b634bb341a687c051efcc043153b0cb8a8a2371ee168eb5dd81f0f", again.Get().EffectiveConfigHash())
+	hash, err := sidekick.HashConfig(cfg)
+	require.NoError(t, err)
+	require.Equal(t, hash, again.Get().EffectiveConfigHash())
 }
 
 func TestCorruptStateStartsEmpty(t *testing.T) {

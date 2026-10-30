@@ -36,13 +36,13 @@ type State struct {
 	// WoWPathsSet distinguishes an explicitly managed, possibly empty folder list
 	// from older state that should retain automatic-detection fallback behavior.
 	WoWPathsSet bool `json:"wow_paths_set,omitempty"`
-	// KeepLog turns off renaming the combat log after it was uploaded. The
-	// zero value archives, which is the default.
-	KeepLog bool `json:"keep_log,omitempty"`
 	// Config is the last valid server-managed config applied by Sidekick.
 	Config sidekick.SidekickConfig `json:"config,omitempty"`
 	// Uploaded maps a log path to the size that has been uploaded.
 	Uploaded map[string]int64 `json:"uploaded,omitempty"`
+	// ArchiveGroups persist uploaded log groups until their retained files can
+	// be deleted. The map key is the group's ID.
+	ArchiveGroups map[string]ArchiveGroup `json:"archive_groups,omitempty"`
 	// Logs is the upload ledger: it maps a log's content-keyed source id
 	// (upload.Identify) to what Chronicle has of it. Unlike Uploaded, which is
 	// keyed by path and forgotten when the file is renamed or moved, the ledger
@@ -68,6 +68,21 @@ func (s State) EffectiveConfigHash() string {
 		return ""
 	}
 	return hash
+}
+
+// ArchiveGroup is one retained play session and its Chronicle log group.
+type ArchiveGroup struct {
+	ID               string    `json:"id"`
+	InstallDirectory string    `json:"install_directory"`
+	InstallID        string    `json:"install_id"`
+	LogID            string    `json:"log_id,omitempty"`
+	ReportURL        string    `json:"report_url,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastExitAt       time.Time `json:"last_exit_at,omitempty"`
+	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
+	DeleteAfter      time.Time `json:"delete_after,omitempty"`
+	Pending          bool      `json:"pending,omitempty"`
+	Files            []string  `json:"files,omitempty"`
 }
 
 // Log is one entry of the upload ledger.
@@ -142,6 +157,11 @@ func (s *Store) Get() State {
 	defer s.mu.Unlock()
 	cp := s.st
 	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
+	cp.ArchiveGroups = make(map[string]ArchiveGroup, len(s.st.ArchiveGroups))
+	for k, v := range s.st.ArchiveGroups {
+		v.Files = append([]string(nil), v.Files...)
+		cp.ArchiveGroups[k] = v
+	}
 	cp.Uploaded = make(map[string]int64, len(s.st.Uploaded))
 	for k, v := range s.st.Uploaded {
 		cp.Uploaded[k] = v
