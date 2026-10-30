@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"regexp"
 	"runtime"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
@@ -31,12 +32,26 @@ func NewInstaller() (*Installer, error) {
 	updater, err := selfupdate.NewUpdater(selfupdate.Config{
 		Source:        source,
 		Validator:     newValidator(updateSigningCertificate),
+		Filters:       []string{portableAssetFilter(runtime.GOOS, runtime.GOARCH)},
 		UniversalArch: "all",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create updater: %w", err)
 	}
 	return &Installer{updater: updater}, nil
+}
+
+// portableAssetFilter uniquely selects the executable/archive intended for
+// in-place updates. Release pages also contain first-install artifacts such as
+// Windows setup executables and macOS disk images, which must never replace the
+// running executable directly.
+func portableAssetFilter(goos, goarch string) string {
+	extension := `\.tar\.gz`
+	if goos == "windows" {
+		extension = `\.exe`
+	}
+	name := "chronicle-sidekick-" + goos + "-" + goarch
+	return `(?i)(?:^|/)` + regexp.QuoteMeta(name) + extension + `$`
 }
 
 func newValidator(certificate []byte) selfupdate.Validator {

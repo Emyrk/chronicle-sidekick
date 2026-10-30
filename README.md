@@ -22,6 +22,14 @@ Sidekick runs on macOS, Windows, and Linux. Add one or more WoW folders, then se
 
 Legacy `realmlist.wtf` locations beside `Wow.exe` and under `Data/<locale>/` are supported.
 
+## Downloads
+
+GitHub Releases provides both installed and portable options:
+
+- **Windows:** per-user setup executables for x64 and ARM64, plus standalone executables.
+- **macOS:** a drag-to-Applications DMG, plus the zipped universal app used by automatic updates.
+- **Linux:** portable tarballs for x64 and ARM64.
+
 ## Development
 
 ```sh
@@ -43,7 +51,7 @@ Windows and Linux builds use `CGO_ENABLED=0`.
 
 ## Releases
 
-Push a semantic version tag such as `v0.1.0`. GitHub Actions tests and publishes signed macOS, Windows, and Linux artifacts plus checksums and the Sparkle appcast.
+Push a semantic version tag such as `v0.1.0`. GitHub Actions tests and publishes the macOS ZIP and DMG, Windows portable and setup executables, Linux tarballs, signed checksums, and the Sparkle appcast.
 
 Production releases require `UPDATE_SIGNING_KEY` and `SPARKLE_PRIVATE_ED_KEY` in GitHub Actions. Keep encrypted offline backups. Losing either private key prevents normal update-key rotation.
 

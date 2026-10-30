@@ -101,8 +101,9 @@ jobs:
           DYLD_FRAMEWORK_PATH: ${{ env.SPARKLE_DIR }}
         run: go test -race -count=1 ./...
 
-  # Packages macOS (universal .app in a .zip), Windows and Linux. Runs on
-  # macOS because the darwin tray needs cgo; windows/linux cross-compile.
+  # Packages macOS (universal .app in a ZIP and DMG), Windows (portable and
+  # setup executables), and Linux. Runs on macOS because the darwin tray needs
+  # cgo; windows/linux cross-compile.
   # Tags publish a GitHub Release; manual runs upload an artifact instead.
   package:
     name: Package
@@ -144,18 +145,39 @@ jobs:
         with:
           version: '~> v2'
           args: release --clean --skip=publish --config .goreleaser.yaml
-      - name: Collect and authenticate assets
+      - name: Install Windows installer tooling
+        run: brew install nsis
+      - name: Collect portable Windows assets
         run: |
           for arch in amd64 arm64; do
             source="$(find dist -path "*windows_${arch}*" -name chronicle-sidekick.exe -print -quit)"
             test -n "$source"
             cp "$source" "dist/Chronicle-Sidekick-windows-${arch}.exe"
           done
+      - name: Build Windows installers
+        run: |
+          version="$(git describe --tags --exact-match HEAD)"
+          version="${version#v}"
+          for arch in amd64 arm64; do
+            makensis \
+              -DVERSION="$version" \
+              -DARCH="$arch" \
+              -DSOURCE="$PWD/dist/Chronicle-Sidekick-windows-${arch}.exe" \
+              -DOUTPUT="$PWD/dist/Chronicle-Sidekick-Setup-windows-${arch}.exe" \
+              packaging/windows-installer.nsi
+          done
+      - name: Build macOS disk image
+        run: scripts/macos-dmg.sh dist/Chronicle-Sidekick-macos.zip dist/Chronicle-Sidekick-macos.dmg
+      - name: Authenticate assets
+        run: |
           cd dist
           assets=(
             Chronicle-Sidekick-macos.zip
+            Chronicle-Sidekick-macos.dmg
             Chronicle-Sidekick-windows-amd64.exe
             Chronicle-Sidekick-windows-arm64.exe
+            Chronicle-Sidekick-Setup-windows-amd64.exe
+            Chronicle-Sidekick-Setup-windows-arm64.exe
             Chronicle-Sidekick-linux-amd64.tar.gz
             Chronicle-Sidekick-linux-arm64.tar.gz
           )
@@ -186,8 +208,11 @@ jobs:
           retention-days: 14
           path: |
             dist/Chronicle-Sidekick-macos.zip
+            dist/Chronicle-Sidekick-macos.dmg
             dist/Chronicle-Sidekick-windows-amd64.exe
             dist/Chronicle-Sidekick-windows-arm64.exe
+            dist/Chronicle-Sidekick-Setup-windows-amd64.exe
+            dist/Chronicle-Sidekick-Setup-windows-arm64.exe
             dist/Chronicle-Sidekick-linux-amd64.tar.gz
             dist/Chronicle-Sidekick-linux-arm64.tar.gz
             dist/checksums.txt
@@ -200,8 +225,11 @@ jobs:
         run: |
           assets=(
             dist/Chronicle-Sidekick-macos.zip
+            dist/Chronicle-Sidekick-macos.dmg
             dist/Chronicle-Sidekick-windows-amd64.exe
             dist/Chronicle-Sidekick-windows-arm64.exe
+            dist/Chronicle-Sidekick-Setup-windows-amd64.exe
+            dist/Chronicle-Sidekick-Setup-windows-arm64.exe
             dist/Chronicle-Sidekick-linux-amd64.tar.gz
             dist/Chronicle-Sidekick-linux-arm64.tar.gz
             dist/checksums.txt
