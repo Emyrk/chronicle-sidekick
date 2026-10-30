@@ -60,11 +60,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, upload, wows, report, connect, disconnect, update, forceUpdate *systray.MenuItem
-	wowFolders                                                             map[string]wowMenuEntry
-	uploadEntries                                                          []wowMenuEntry
-	uploadDirs                                                             []string
-	uploadCount                                                            int
+	status, version, upload, wows, report, connect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                                      map[string]wowMenuEntry
+	uploadEntries                                                                   []wowMenuEntry
+	uploadDirs                                                                      []string
+	uploadCount                                                                     int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -82,6 +82,8 @@ func (a *app) onReady(ctx context.Context) {
 
 	a.items.status = systray.AddMenuItem("Starting…", "")
 	a.items.status.Disable()
+	a.items.version = systray.AddMenuItem(versionLabel(version), "The running Chronicle Sidekick version")
+	a.items.version.Disable()
 	systray.AddSeparator()
 	a.items.upload = systray.AddMenuItem("Upload now", "Upload combat logs")
 	a.items.report = systray.AddMenuItem("Open last report", "")
