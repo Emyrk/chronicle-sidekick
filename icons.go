@@ -1,6 +1,9 @@
 package main
 
 //go:generate go run ./scripts/uploader-icon icons/tray_logo_original.webp icons
+//go:generate go run ./scripts/windows-icon packaging/chronicle-logo.png packaging/AppIcon.ico
+//go:generate go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico packaging/AppIcon.ico -o rsrc_windows_amd64.syso
+//go:generate go run github.com/akavel/rsrc@v0.10.2 -arch arm64 -ico packaging/AppIcon.ico -o rsrc_windows_arm64.syso
 
 import (
 	"bytes"

@@ -7,6 +7,9 @@
 !ifndef SOURCE
   !error "SOURCE is required"
 !endif
+!ifndef ICON
+  !error "ICON is required"
+!endif
 !ifndef OUTPUT
   !error "OUTPUT is required"
 !endif
@@ -32,6 +35,8 @@ InstallDirRegKey HKCU "${PRODUCT_REG_KEY}" "InstallDir"
 BrandingText "${PRODUCT_NAME}"
 
 !define MUI_ABORTWARNING
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\chronicle-sidekick.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Start Chronicle Sidekick"
 

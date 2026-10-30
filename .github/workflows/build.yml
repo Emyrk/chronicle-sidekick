@@ -163,6 +163,7 @@ jobs:
               -DVERSION="$version" \
               -DARCH="$arch" \
               -DSOURCE="$PWD/dist/Chronicle-Sidekick-windows-${arch}.exe" \
+              -DICON="$PWD/packaging/AppIcon.ico" \
               -DOUTPUT="$PWD/dist/Chronicle-Sidekick-Setup-windows-${arch}.exe" \
               packaging/windows-installer.nsi
           done

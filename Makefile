@@ -10,4 +10,4 @@ lint:
 	go vet ./...
 
 icons:
-	go run ./scripts/uploader-icon packaging/chronicle-logo.png icons
+	go generate .
