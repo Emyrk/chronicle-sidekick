@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
@@ -120,6 +126,58 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 	require.True(t, a.autoUploadTrigger(wowdir.Install{Dir: dir}).OnExit)
 	require.False(t, a.autoUploadTrigger(wowdir.Install{Dir: filepath.Join(dir, "other")}).OnExit)
 	require.Equal(t, sidekick.GameFormatWrath335a, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
+}
+
+func TestViewSettingsRefreshesStatusAndConfigBeforeOpening(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+
+	config := sidekick.DefaultConfig()
+	config.Archive.RetentionDays = 30
+	configHash, err := sidekick.HashConfig(config)
+	require.NoError(t, err)
+
+	statusCh := make(chan sidekick.Status, 1)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/sidekick/status" {
+			http.NotFound(w, r)
+			return
+		}
+		var status sidekick.Status
+		if err := json.NewDecoder(r.Body).Decode(&status); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		statusCh <- status
+		_ = json.NewEncoder(w).Encode(sidekick.UpdateResponse{
+			SettingsURL: server.URL + "/settings/sidekick",
+			ConfigHash:  configHash,
+			Config:      &config,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	a := &app{
+		server: server.URL,
+		store:  st,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		token: &oauth2.Token{
+			AccessToken: "access-token",
+			Expiry:      time.Now().Add(time.Hour),
+		},
+		installation: installationInfo{Platform: "windows/amd64", Version: "test"},
+	}
+	var opened string
+	a.viewSettings(context.Background(), func(u string) { opened = u })
+
+	require.Equal(t, server.URL+"/settings/sidekick", opened)
+	require.Equal(t, configHash, st.Get().EffectiveConfigHash())
+	require.Equal(t, 30, st.Get().EffectiveConfig().Archive.RetentionDays)
+	status := <-statusCh
+	require.Equal(t, "windows/amd64", status.Platform)
+	require.Equal(t, "test", status.SidekickVersion)
 }
 
 func TestResolveSettingsURL(t *testing.T) {

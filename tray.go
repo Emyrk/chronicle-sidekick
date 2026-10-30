@@ -165,12 +165,7 @@ func (a *app) onReady(ctx context.Context) {
 					openURL(u)
 				}
 			case <-a.items.settings.ClickedCh:
-				a.mu.Lock()
-				u := a.settingsURL
-				a.mu.Unlock()
-				if u != "" {
-					openURL(u)
-				}
+				go a.viewSettings(ctx, openURL)
 			case <-a.items.connect.ClickedCh:
 				go a.connect(ctx)
 			case <-a.items.cancelConnect.ClickedCh:
@@ -276,6 +271,18 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	if changed {
 		a.logger.Info("synced Sidekick config", "config_hash", response.ConfigHash)
+	}
+}
+
+func (a *app) viewSettings(ctx context.Context, open func(string)) {
+	// Refresh first so Chronicle receives the latest local state and Sidekick
+	// applies any pending managed config before the settings page loads.
+	a.reportStatusOnce(ctx)
+	a.mu.Lock()
+	u := a.settingsURL
+	a.mu.Unlock()
+	if u != "" {
+		open(u)
 	}
 }
 
