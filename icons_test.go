@@ -45,6 +45,20 @@ func checkMark(t *testing.T, s engine.State, img image.Image, mask image.Image, 
 	require.NotZero(t, bodyPixels, "%s: no opaque logo-body pixel", msg)
 }
 
+func TestStateColors(t *testing.T) {
+	t.Parallel()
+	want := map[engine.State]color.NRGBA{
+		engine.StateIdle:      {0x8a, 0x8f, 0x98, 0xff},
+		engine.StateNoLog:     {0xe5, 0x48, 0x4d, 0xff},
+		engine.StateWaiting:   {0xf9, 0x73, 0x16, 0xff},
+		engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff},
+		engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff},
+		engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff},
+		engine.StateReconnect: {0xf2, 0xc1, 0x2e, 0xff},
+	}
+	require.Equal(t, want, stateColors)
+}
+
 func TestTrayIconLogoMarkCarriesState(t *testing.T) {
 	t.Parallel()
 	masks := map[int][]byte{16: logoMarkMask16, 32: logoMarkMask32, 36: logoMarkMask36}

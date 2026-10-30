@@ -10,6 +10,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.9
 	github.com/stretchr/testify v1.11.1
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/image v0.0.0-20210220032944-ac19c3e999fb
 	golang.org/x/oauth2 v0.34.0
 	golang.org/x/sys v0.46.0
 )
@@ -43,7 +44,6 @@ require (
 	github.com/xanzy/go-gitlab v0.115.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/image v0.0.0-20210220032944-ac19c3e999fb // indirect
 	golang.org/x/time v0.11.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -31,7 +31,7 @@ func TestEncodeDeterministicAndDecodable(t *testing.T) {
 
 func TestLogoMarkMaskAndBodyAreSeparate(t *testing.T) {
 	t.Parallel()
-	l := loadLogo("../../packaging/chronicle-logo.png")
+	l := loadLogo("../../icons/tray_logo_original.webp")
 	mask := l.renderMarkMask(36)
 	body := l.renderBody(36, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255})
 	markPixels, bodyPixels := 0, 0

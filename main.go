@@ -50,6 +50,7 @@ func run() error {
 		devToken        = flag.String("dev-token", os.Getenv("CHRONICLE_UPLOADER_TOKEN"), "development only: token to store in the keychain instead of pairing (prefer CHRONICLE_UPLOADER_TOKEN; argv is visible to other processes)")
 		background      = flag.Bool("background", false, "start in the system tray without showing the startup window")
 		waitForInstance = flag.Bool("wait-for-instance", false, "wait for the previous Sidekick process to exit")
+		stateDebug      = flag.Bool("state-debug", false, "preview each tray icon state, advancing every 3 seconds")
 	)
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
@@ -71,7 +72,11 @@ func run() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	lock, err := acquireInstanceWithWait(filepath.Join(dir, "sidekick.lock"), *waitForInstance)
+	lockName := "sidekick.lock"
+	if *stateDebug {
+		lockName = "sidekick-state-debug.lock"
+	}
+	lock, err := acquireInstanceWithWait(filepath.Join(dir, lockName), *waitForInstance)
 	if err != nil {
 		return err
 	}
@@ -132,7 +137,10 @@ func run() error {
 	}
 	a := &app{
 		server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token,
-		installation: installation, background: *background,
+		installation: installation, background: *background, stateDebug: *stateDebug,
+	}
+	if *stateDebug {
+		a.status = stateDebugStatuses[0]
 	}
 	if *server != "" {
 		a.uploadOverride = tn.BaseURL
@@ -165,11 +173,13 @@ func run() error {
 		OnStatus: a.onStatus,
 		Logger:   logger,
 	})
-	go func() {
-		if err := upload.Ping(ctx, nil, tn.BaseURL); err != nil {
-			logger.Error("server check failed", "err", err)
-		}
-	}()
+	if !*stateDebug {
+		go func() {
+			if err := upload.Ping(ctx, nil, tn.BaseURL); err != nil {
+				logger.Error("server check failed", "err", err)
+			}
+		}()
+	}
 	return a.runTray(ctx)
 }
 

@@ -1,6 +1,6 @@
 package main
 
-//go:generate go run ./scripts/uploader-icon packaging/chronicle-logo.png icons
+//go:generate go run ./scripts/uploader-icon icons/tray_logo_original.webp icons
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 )
 
-// The logo bodies and mark masks are rendered from packaging/chronicle-logo.png
-// (make icons). The mask is white with alpha; it is tinted with the state colour
-// and composited over the body.
+// The logo bodies and mark masks are rendered from icons/tray_logo_original.webp
+// (go generate). The mask is white with alpha; it is tinted with the state colour
+// and composited over the gold arrows.
 var (
 	//go:embed icons/logo_black_36.png
 	logoBlack []byte // macOS body for a light menu bar, 36 px = 18 pt @2x
@@ -35,13 +35,13 @@ var (
 )
 
 var stateColors = map[engine.State]color.NRGBA{
-	engine.StateIdle:      {0x8a, 0x8f, 0x98, 0xff}, // grey: waiting for WoW
-	engine.StateNoLog:     {0xe5, 0x48, 0x4d, 0xff}, // red: WoW running, not logging
-	engine.StateWaiting:   {0xf9, 0x73, 0x16, 0xff}, // orange: logging on, waiting for a fight
-	engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff}, // green: recording
-	engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff}, // blue: uploading
-	engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff}, // green: uploaded
-	engine.StateReconnect: {0xf2, 0xc1, 0x2e, 0xff}, // yellow: not connected
+	engine.StateIdle:      {0x8a, 0x8f, 0x98, 0xff}, // gray: waiting for WoW
+	engine.StateNoLog:     {0xe5, 0x48, 0x4d, 0xff}, // red: combat logging not detected
+	engine.StateWaiting:   {0xf9, 0x73, 0x16, 0xff}, // orange: combat logging started, waiting for data
+	engine.StateRecording: {0x22, 0xc5, 0x5e, 0xff}, // green: combat log receiving data
+	engine.StateUploading: {0x3b, 0x82, 0xf6, 0xff}, // blue: uploading or retrying
+	engine.StateUploaded:  {0x22, 0xc5, 0x5e, 0xff}, // green: upload complete
+	engine.StateReconnect: {0xf2, 0xc1, 0x2e, 0xff}, // yellow: Chronicle sign-in required
 }
 
 type iconKey struct {

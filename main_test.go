@@ -6,15 +6,30 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
+
+func TestStateDebugSequence(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, 3*time.Second, stateDebugInterval)
+	require.Equal(t, []engine.Status{
+		{State: engine.StateIdle, Detail: "Gray: Waiting for WoW"},
+		{State: engine.StateNoLog, Detail: "Red: Combat logging not detected"},
+		{State: engine.StateWaiting, Detail: "Orange: Combat logging started, waiting for data"},
+		{State: engine.StateRecording, Detail: "Green: Combat log receiving data"},
+		{State: engine.StateUploading, Detail: "Blue: Uploading or retrying"},
+		{State: engine.StateReconnect, Detail: "Yellow: Chronicle sign-in required"},
+	}, stateDebugStatuses)
+}
 
 func TestEnsureInstallationPersistsStableID(t *testing.T) {
 	t.Parallel()

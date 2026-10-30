@@ -36,6 +36,7 @@ type app struct {
 	cancel         context.CancelFunc
 	installation   installationInfo
 	background     bool
+	stateDebug     bool
 
 	mu     sync.Mutex
 	status engine.Status
@@ -98,7 +99,7 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
 	a.items.forceUpdate = systray.AddMenuItem("Force update now…", "Download, verify, and reinstall the latest release")
-	if nativeUpdaterAvailable() {
+	if nativeUpdaterAvailable() && !a.stateDebug {
 		a.items.forceUpdate.Hide()
 		a.items.update.SetTitle("Check for updates…")
 		a.items.update.Show()
@@ -123,6 +124,25 @@ func (a *app) onReady(ctx context.Context) {
 	a.ready = true
 	a.mu.Unlock()
 	a.render()
+
+	if a.stateDebug {
+		for _, item := range []*systray.MenuItem{
+			a.items.upload, a.items.report, a.items.connect, a.items.cancelConnect,
+			a.items.disconnect, a.items.update, a.items.forceUpdate, a.items.wows,
+			choose, detectFolders, archive, login,
+		} {
+			item.Hide()
+		}
+		go a.runStateDebug(ctx)
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-quit.ClickedCh:
+				a.cancel()
+			}
+		}()
+		return
+	}
 
 	go a.engine.Run(ctx)
 	go a.startup(ctx)
@@ -186,6 +206,30 @@ func (a *app) onReady(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+const stateDebugInterval = 3 * time.Second
+
+var stateDebugStatuses = []engine.Status{
+	{State: engine.StateIdle, Detail: "Gray: Waiting for WoW"},
+	{State: engine.StateNoLog, Detail: "Red: Combat logging not detected"},
+	{State: engine.StateWaiting, Detail: "Orange: Combat logging started, waiting for data"},
+	{State: engine.StateRecording, Detail: "Green: Combat log receiving data"},
+	{State: engine.StateUploading, Detail: "Blue: Uploading or retrying"},
+	{State: engine.StateReconnect, Detail: "Yellow: Chronicle sign-in required"},
+}
+
+func (a *app) runStateDebug(ctx context.Context) {
+	ticker := time.NewTicker(stateDebugInterval)
+	defer ticker.Stop()
+	for i := 0; ; i = (i + 1) % len(stateDebugStatuses) {
+		a.onStatus(stateDebugStatuses[i])
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 const statusInterval = time.Minute
@@ -682,6 +726,9 @@ func (a *app) render() {
 	setTrayIcon(trayIcon(s.State))
 	systray.SetTooltip("Chronicle Sidekick: " + s.Detail)
 	a.items.status.SetTitle(s.Detail)
+	if a.stateDebug {
+		return
+	}
 	if s.ReportURL != "" {
 		a.items.report.Enable()
 	}
