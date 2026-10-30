@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Chronicle Sidekick stone glyph. Original artwork; master for the tray and
-     app icons (regenerate with `make uploader/icons`). The generator reads the
-     two <ellipse> elements (side face first, then top face) and the
-     <polyline>, so keep to those element kinds. -->
+<!-- Original Chronicle Sidekick stone artwork retained as the source for the
+     existing application icon. The tray now uses chronicle-logo.png. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <g transform="rotate(-25 32 32)" stroke-linecap="round" stroke-linejoin="round">
     <ellipse cx="35" cy="34" rx="24" ry="20" fill="#9ca3af" stroke="#6b7280" stroke-width="4"/>

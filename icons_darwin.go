@@ -9,8 +9,8 @@ import (
 	"fyne.io/systray"
 )
 
-// monoGlyph: on macOS the glyph is black or white to match the menu bar. It is
-// not a template image, because a template would flatten the coloured spiral.
+// monoGlyph: on macOS the logo body is black or white to match the menu bar. It
+// is not a template image, because a template would flatten the coloured mark.
 const monoGlyph = true
 
 // menuBarDark reports whether the system appearance is dark. The key is absent

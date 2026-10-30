@@ -21,46 +21,45 @@ func nrgbaAt(img image.Image, x, y int) color.NRGBA {
 	return color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
 }
 
-// checkSwirl asserts that every fully opaque mask pixel carries the state
-// colour, and that the former dot corner holds no state colour.
-func checkSwirl(t *testing.T, s engine.State, img image.Image, mask image.Image, msg string) {
+// checkMark asserts that every fully opaque logo-mark pixel carries the state
+// colour and that the rendered icon also retains an opaque body.
+func checkMark(t *testing.T, s engine.State, img image.Image, mask image.Image, msg string) {
 	t.Helper()
 	want := stateColors[s]
-	n := 0
+	markPixels, bodyPixels := 0, 0
 	b := mask.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			if nrgbaAt(mask, x, y).A == 255 {
-				n++
-				require.Equal(t, want, nrgbaAt(img, x, y), "%s: spiral pixel (%d,%d)", msg, x, y)
+			maskPixel := nrgbaAt(mask, x, y)
+			iconPixel := nrgbaAt(img, x, y)
+			if maskPixel.A == 255 {
+				markPixels++
+				require.Equal(t, want, iconPixel, "%s: logo-mark pixel (%d,%d)", msg, x, y)
+			}
+			if maskPixel.A == 0 && iconPixel.A == 255 {
+				bodyPixels++
 			}
 		}
 	}
-	require.NotZero(t, n, "%s: no opaque spiral pixel", msg)
-
-	size := b.Dx()
-	c := size * 28 / 36 // former dot centre
-	got := nrgbaAt(img, c, c)
-	for st, sc := range stateColors {
-		require.False(t, got.A > 0 && got == sc, "%s: corner is state colour of %v", msg, st)
-	}
+	require.NotZero(t, markPixels, "%s: no opaque logo-mark pixel", msg)
+	require.NotZero(t, bodyPixels, "%s: no opaque logo-body pixel", msg)
 }
 
-func TestTrayIconSwirlCarriesState(t *testing.T) {
+func TestTrayIconLogoMarkCarriesState(t *testing.T) {
 	t.Parallel()
-	masks := map[int][]byte{16: swirlMask16, 32: swirlMask32, 36: swirlMask36}
+	masks := map[int][]byte{16: logoMarkMask16, 32: logoMarkMask32, 36: logoMarkMask36}
 	for _, s := range allStates {
 		require.NotEmpty(t, trayIcon(s), "state %v", s)
 		for _, dark := range []bool{false, true} {
 			for _, i := range buildIcons(s, dark) {
 				img, err := png.Decode(bytes.NewReader(i.data))
 				require.NoError(t, err)
-				checkSwirl(t, s, img, decodePNG(masks[i.size]), "buildIcons")
+				checkMark(t, s, img, decodePNG(masks[i.size]), "buildIcons")
 			}
 		}
 		// The macOS path, whatever platform the tests run on.
-		for _, body := range [][]byte{stoneBlack, stoneWhite} {
-			checkSwirl(t, s, swirlOnBody(body, swirlMask36, stateColors[s]), decodePNG(swirlMask36), "mono")
+		for _, body := range [][]byte{logoBlack, logoWhite} {
+			checkMark(t, s, markOnBody(body, logoMarkMask36, stateColors[s]), decodePNG(logoMarkMask36), "mono")
 		}
 	}
 }
@@ -83,13 +82,13 @@ func TestContactSheet(t *testing.T) {
 		bg   color.NRGBA
 		body []byte
 	}{
-		{color.NRGBA{0xe6, 0xe6, 0xe6, 0xff}, stoneBlack},
-		{color.NRGBA{0x2b, 0x2b, 0x2b, 0xff}, stoneWhite},
+		{color.NRGBA{0xe6, 0xe6, 0xe6, 0xff}, logoBlack},
+		{color.NRGBA{0x2b, 0x2b, 0x2b, 0xff}, logoWhite},
 	}
 	for r, bar := range bars {
 		draw.Draw(sheet, image.Rect(0, r*rowH, w, (r+1)*rowH), image.NewUniform(bar.bg), image.Point{}, draw.Src)
 		for i, s := range states {
-			icon := swirlOnBody(bar.body, swirlMask36, stateColors[s])
+			icon := markOnBody(bar.body, logoMarkMask36, stateColors[s])
 			x := pad + i*(cell+pad)
 			y := r * rowH
 			draw.Draw(sheet, image.Rect(x, y+pad/2, x+36, y+pad/2+36), icon, image.Point{}, draw.Over)

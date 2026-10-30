@@ -5,7 +5,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,22 +29,25 @@ func TestEncodeDeterministicAndDecodable(t *testing.T) {
 	require.Equal(t, img.Pix, nrgba.Pix)
 }
 
-func TestSwirlMaskAndBodyAreSeparate(t *testing.T) {
+func TestLogoMarkMaskAndBodyAreSeparate(t *testing.T) {
 	t.Parallel()
-	svg, err := os.ReadFile("../../packaging/stone.svg")
-	require.NoError(t, err)
-	s := parseStone(string(svg))
-	mask := s.swirlMask(36)
-	body := s.body(36, nil)
-	spiral := 0
+	l := loadLogo("../../packaging/chronicle-logo.png")
+	mask := l.renderMarkMask(36)
+	body := l.renderBody(36, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255})
+	markPixels, bodyPixels := 0, 0
 	for y := 0; y < 36; y++ {
 		for x := 0; x < 36; x++ {
-			if mask.NRGBAAt(x, y).A == 255 {
-				spiral++
-				// The body never carries the spiral's blue.
-				require.NotEqual(t, s.spiralColor, rgb{float64(body.NRGBAAt(x, y).R), float64(body.NRGBAAt(x, y).G), float64(body.NRGBAAt(x, y).B)})
+			m := mask.NRGBAAt(x, y)
+			b := body.NRGBAAt(x, y)
+			if m.A == 255 {
+				markPixels++
+			}
+			if b.A == 255 {
+				bodyPixels++
+				require.Equal(t, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255}, b)
 			}
 		}
 	}
-	require.NotZero(t, spiral)
+	require.NotZero(t, markPixels)
+	require.NotZero(t, bodyPixels)
 }

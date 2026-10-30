@@ -1,275 +1,117 @@
-// Command uploader-icon renders the Chronicle Sidekick stone glyph from its
-// SVG master (packaging/stone.svg) into the committed tray PNGs
-// and the app icon (.icns: the stone on a gold-to-brown gradient square). The
-// tray set is the stone body without its spiral plus a swirl-only alpha mask
-// per size; the uploader tints the mask with the state colour.
+// Command uploader-icon renders the Chronicle logo into the committed tray
+// assets. The dark logo disc is emitted as the tray body, while the gold mark
+// becomes an alpha mask that Sidekick tints with its current state colour.
 //
-// It is a tiny rasteriser, not a general SVG renderer: it reads the <ellipse>,
-// <polyline> and the group's rotate() transform and stroke-width, which is all
-// the stone uses. Output is deterministic so re-running it is a no-op.
+// Output is deterministic so re-running the command is a no-op.
 //
-// Usage: go run ./scripts/uploader-icon <stone.svg> <tray-dir> <AppIcon.icns>
+// Usage: go run ./scripts/uploader-icon <logo.png> <tray-dir>
 package main
 
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"hash/adler32"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/png"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
-)
-
-var (
-	gold  = [3]float64{0xe6, 0xb4, 0x2c}
-	brown = [3]float64{0x5a, 0x34, 0x17}
 )
 
 type rgb = [3]float64
 
-// ellipse is one face of the stone.
-type ellipse struct {
-	cx, cy, rx, ry float64
-	half           float64 // half stroke width
-	fill, edge     rgb
+var (
+	logoBackground = rgb{0x2b, 0x2b, 0x2b}
+	logoMark       = rgb{0xc1, 0xa4, 0x6e}
+)
+
+type logo struct {
+	img *image.NRGBA
 }
 
-// stone is the parsed SVG: a side-face ellipse, a top-face ellipse and a spiral
-// polyline in a group rotated around (rcx, rcy). Coordinates are in the 64x64
-// viewBox.
-type stone struct {
-	side, top   ellipse
-	rcx, rcy    float64
-	cos, sin    float64 // inverse rotation
-	spiralHalf  float64
-	spiralColor rgb
-	spiral      [][2]float64
-}
-
-func attr(s, name string) string {
-	m := regexp.MustCompile(`\b` + name + `="([^"]*)"`).FindStringSubmatch(s)
-	if m == nil {
-		log.Fatalf("stone.svg: missing %s", name)
-	}
-	return m[1]
-}
-
-func num(s string) float64 {
-	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+func loadLogo(path string) *logo {
+	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return f
-}
-
-func hex(s string) rgb {
-	var r, g, b int
-	if _, err := fmt.Sscanf(s, "#%02x%02x%02x", &r, &g, &b); err != nil {
-		log.Fatalf("stone.svg: bad colour %q", s)
+	defer f.Close()
+	decoded, err := png.Decode(f)
+	if err != nil {
+		log.Fatal(err)
 	}
-	return rgb{float64(r), float64(g), float64(b)}
-}
-
-func parseEllipse(e string) ellipse {
-	return ellipse{
-		cx: num(attr(e, "cx")), cy: num(attr(e, "cy")),
-		rx: num(attr(e, "rx")), ry: num(attr(e, "ry")),
-		half: num(attr(e, "stroke-width")) / 2,
-		fill: hex(attr(e, "fill")), edge: hex(attr(e, "stroke")),
-	}
-}
-
-func parseStone(svg string) *stone {
-	g := regexp.MustCompile(`<g [^>]*>`).FindString(svg)
-	ells := regexp.MustCompile(`<ellipse [^>]*>`).FindAllString(svg, -1)
-	pol := regexp.MustCompile(`<polyline [^>]*>`).FindString(svg)
-	if len(ells) != 2 {
-		log.Fatal("stone.svg: want exactly two ellipses (side, top)")
-	}
-	rot := strings.Fields(strings.NewReplacer("rotate(", "", ")", "").Replace(attr(g, "transform")))
-	if len(rot) != 3 {
-		log.Fatal("stone.svg: transform must be rotate(angle cx cy)")
-	}
-	a := num(rot[0]) * math.Pi / 180
-	s := &stone{
-		side: parseEllipse(ells[0]), top: parseEllipse(ells[1]),
-		rcx: num(rot[1]), rcy: num(rot[2]),
-		cos: math.Cos(-a), sin: math.Sin(-a),
-		spiralHalf:  num(attr(pol, "stroke-width")) / 2,
-		spiralColor: hex(attr(pol, "stroke")),
-	}
-	for _, p := range strings.Fields(attr(pol, "points")) {
-		xy := strings.Split(p, ",")
-		s.spiral = append(s.spiral, [2]float64{num(xy[0]), num(xy[1])})
-	}
-	return s
-}
-
-func segDist(px, py float64, a, b [2]float64) float64 {
-	dx, dy := b[0]-a[0], b[1]-a[1]
-	t := ((px-a[0])*dx + (py-a[1])*dy) / (dx*dx + dy*dy)
-	t = math.Max(0, math.Min(1, t))
-	return math.Hypot(px-a[0]-t*dx, py-a[1]-t*dy)
-}
-
-// paint returns the ellipse's stroke or fill colour at (x, y), and whether the
-// point is on the stroke.
-func (e ellipse) paint(x, y float64) (c rgb, ok, stroke bool) {
-	ex, ey := x-e.cx, y-e.cy
-	f := ex*ex/(e.rx*e.rx) + ey*ey/(e.ry*e.ry)
-	grad := math.Hypot(2*ex/(e.rx*e.rx), 2*ey/(e.ry*e.ry))
-	if grad > 0 && math.Abs(f-1)/grad <= e.half {
-		return e.edge, true, true
-	}
-	if f < 1 {
-		return e.fill, true, false
-	}
-	return rgb{}, false, false
-}
-
-// spiralAt reports whether viewBox point (x, y) is on the spiral stroke of
-// half-width half. Points are given in the rotated group's outer frame.
-func (s *stone) spiralAt(x, y, half float64) bool {
-	x, y = s.unrotate(x, y)
-	if math.Hypot(x-s.top.cx, y-s.top.cy) >= 20 {
-		return false
-	}
-	for i := 1; i < len(s.spiral); i++ {
-		if segDist(x, y, s.spiral[i-1], s.spiral[i]) <= half {
-			return true
+	bounds := decoded.Bounds()
+	img := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			img.Set(x, y, decoded.At(bounds.Min.X+x, bounds.Min.Y+y))
 		}
 	}
-	return false
+	return &logo{img: img}
 }
 
-// unrotate maps a viewBox point into the ellipses' frame.
-func (s *stone) unrotate(x, y float64) (float64, float64) {
-	dx, dy := x-s.rcx, y-s.rcy
-	return s.rcx + dx*s.cos - dy*s.sin, s.rcy + dx*s.sin + dy*s.cos
-}
-
-// bodyAt returns the stone body (no spiral) paint at viewBox point (x, y). With
-// mono set, the top face's fill is transparent (so only its outline shows) and
-// the side face is solid; callers recolour the result.
-func (s *stone) bodyAt(x, y float64, mono bool) (rgb, bool) {
-	x, y = s.unrotate(x, y)
-	if c, ok, stroke := s.top.paint(x, y); ok && (stroke || !mono) {
-		return c, true
-	} else if ok {
-		return rgb{}, false // mono: the top face hides the side face behind it
+// markAmount estimates how far a source pixel lies between the dark logo disc
+// and the gold logo mark. This retains the source artwork's antialiasing while
+// allowing the mark to be recoloured at runtime.
+func markAmount(c color.NRGBA) float64 {
+	var dot, length float64
+	for i, v := range []float64{float64(c.R), float64(c.G), float64(c.B)} {
+		d := logoMark[i] - logoBackground[i]
+		dot += (v - logoBackground[i]) * d
+		length += d * d
 	}
-	c, ok, _ := s.side.paint(x, y)
-	return c, ok
+	return math.Max(0, math.Min(1, dot/length))
 }
 
-// at returns the full stone (body and spiral at the master's stroke width).
-func (s *stone) at(x, y float64) (rgb, bool) {
-	if s.spiralAt(x, y, s.spiralHalf) {
-		return s.spiralColor, true
-	}
-	return s.bodyAt(x, y, false)
+const samples = 8
+
+// renderBody paints the logo disc in bodyColour. The state-coloured mark is
+// composited over this image by the application.
+func (l *logo) renderBody(size int, bodyColour color.NRGBA) *image.NRGBA {
+	return l.render(size, func(c color.NRGBA) color.NRGBA {
+		bodyColour.A = c.A
+		return bodyColour
+	})
 }
 
-const ss = 4
+// renderMarkMask emits the gold logo mark as white alpha.
+func (l *logo) renderMarkMask(size int) *image.NRGBA {
+	return l.render(size, func(c color.NRGBA) color.NRGBA {
+		return color.NRGBA{R: 255, G: 255, B: 255, A: uint8(float64(c.A)*markAmount(c) + 0.5)}
+	})
+}
 
-// trayStroke is the spiral stroke width in the tray renders, in pixels at
-// 36 px; it scales with the icon size. The SVG master keeps its own width.
-const trayStroke = 3.5
-
-// render samples paint over a size x size canvas covering the 64-unit viewBox.
-// A non-nil mono makes the result that single colour, with alpha only.
-func render(size int, mono *rgb, paint func(u, v float64) (rgb, bool)) *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+func (l *logo) render(size int, paint func(color.NRGBA) color.NRGBA) *image.NRGBA {
+	out := image.NewNRGBA(image.Rect(0, 0, size, size))
+	bounds := l.img.Bounds()
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
-			var c rgb
-			var n float64
-			for sy := 0; sy < ss; sy++ {
-				for sx := 0; sx < ss; sx++ {
-					u := (float64(x) + (float64(sx)+0.5)/ss) * 64 / float64(size)
-					v := (float64(y) + (float64(sy)+0.5)/ss) * 64 / float64(size)
-					p, ok := paint(u, v)
-					if !ok {
-						continue
-					}
-					if mono != nil {
-						p = *mono
-					}
-					for i := range c {
-						c[i] += p[i]
-					}
-					n++
+			var sum [4]float64
+			for sy := 0; sy < samples; sy++ {
+				for sx := 0; sx < samples; sx++ {
+					u := (float64(x) + (float64(sx)+0.5)/samples) / float64(size)
+					v := (float64(y) + (float64(sy)+0.5)/samples) / float64(size)
+					px := min(int(u*float64(bounds.Dx())), bounds.Dx()-1)
+					py := min(int(v*float64(bounds.Dy())), bounds.Dy()-1)
+					c := paint(l.img.NRGBAAt(px, py))
+					sum[0] += float64(c.R)
+					sum[1] += float64(c.G)
+					sum[2] += float64(c.B)
+					sum[3] += float64(c.A)
 				}
 			}
-			if n == 0 {
-				continue
-			}
-			img.SetNRGBA(x, y, color.NRGBA{uint8(c[0]/n + 0.5), uint8(c[1]/n + 0.5), uint8(c[2]/n + 0.5), uint8(255*n/(ss*ss) + 0.5)})
+			const count = samples * samples
+			out.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(sum[0]/count + 0.5),
+				G: uint8(sum[1]/count + 0.5),
+				B: uint8(sum[2]/count + 0.5),
+				A: uint8(sum[3]/count + 0.5),
+			})
 		}
 	}
-	return img
-}
-
-// body renders the stone without its spiral. A non-nil mono renders it in that
-// single colour, with alpha only.
-func (s *stone) body(size int, mono *rgb) *image.NRGBA {
-	return render(size, mono, func(u, v float64) (rgb, bool) { return s.bodyAt(u, v, mono != nil) })
-}
-
-// swirlMask renders the spiral alone, at the tray stroke width, as white with
-// alpha. The uploader tints it with the state colour at runtime.
-func (s *stone) swirlMask(size int) *image.NRGBA {
-	half := trayStroke / 2 * 64 / 36
-	white := rgb{255, 255, 255}
-	return render(size, &white, func(u, v float64) (rgb, bool) { return white, s.spiralAt(u, v, half) })
-}
-
-// appIcon draws the stone on the gold gradient rounded square.
-func (s *stone) appIcon(size int) *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	const half, rad = 0.41, 0.18 // macOS icon grid: square covers 82% of the canvas
-	const span = 0.70            // the 64-unit viewBox covers 70% of the canvas
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			var c rgb
-			var a float64
-			for sy := 0; sy < ss; sy++ {
-				for sx := 0; sx < ss; sx++ {
-					u := (float64(x) + (float64(sx)+0.5)/ss) / float64(size)
-					v := (float64(y) + (float64(sy)+0.5)/ss) / float64(size)
-					dx := math.Max(math.Abs(u-0.5)-(half-rad), 0)
-					dy := math.Max(math.Abs(v-0.5)-(half-rad), 0)
-					if dx*dx+dy*dy > rad*rad {
-						continue
-					}
-					t := (u + v) / 2
-					p := rgb{}
-					for i := range p {
-						p[i] = gold[i]*(1-t) + brown[i]*t
-					}
-					if q, ok := s.at(32+(u-0.5)/span*64, 32+(v-0.5)/span*64); ok {
-						p = q
-					}
-					for i := range c {
-						c[i] += p[i]
-					}
-					a++
-				}
-			}
-			if a > 0 {
-				img.SetNRGBA(x, y, color.NRGBA{uint8(c[0]/a + 0.5), uint8(c[1]/a + 0.5), uint8(c[2]/a + 0.5), uint8(255*a/(ss*ss) + 0.5)})
-			}
-		}
-	}
-	return img
+	return out
 }
 
 // encode writes img as an 8-bit RGBA PNG with every byte hand-framed (filter 0,
@@ -319,48 +161,23 @@ func encode(img *image.NRGBA) []byte {
 }
 
 func main() {
-	if len(os.Args) != 4 {
-		log.Fatal("usage: uploader-icon <stone.svg> <tray-dir> <AppIcon.icns>")
+	if len(os.Args) != 3 {
+		log.Fatal("usage: uploader-icon <logo.png> <tray-dir>")
 	}
-	svg, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		log.Fatal(err)
-	}
-	s := parseStone(string(svg))
-
+	l := loadLogo(os.Args[1])
 	trayDir := os.Args[2]
 	outputs := map[string][]byte{
-		"stone_black_36.png": encode(s.body(36, &rgb{0, 0, 0})),       // macOS, light menu bar (18 pt @2x)
-		"stone_white_36.png": encode(s.body(36, &rgb{255, 255, 255})), // macOS, dark menu bar
-		"stone_color_16.png": encode(s.body(16, nil)),
-		"stone_color_32.png": encode(s.body(32, nil)),
-		"swirl_mask_16.png":  encode(s.swirlMask(16)),
-		"swirl_mask_32.png":  encode(s.swirlMask(32)),
-		"swirl_mask_36.png":  encode(s.swirlMask(36)),
+		"logo_black_36.png":     encode(l.renderBody(36, color.NRGBA{A: 255})),
+		"logo_white_36.png":     encode(l.renderBody(36, color.NRGBA{R: 255, G: 255, B: 255, A: 255})),
+		"logo_color_16.png":     encode(l.renderBody(16, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255})),
+		"logo_color_32.png":     encode(l.renderBody(32, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255})),
+		"logo_mark_mask_16.png": encode(l.renderMarkMask(16)),
+		"logo_mark_mask_32.png": encode(l.renderMarkMask(32)),
+		"logo_mark_mask_36.png": encode(l.renderMarkMask(36)),
 	}
 	for name, data := range outputs {
 		if err := os.WriteFile(filepath.Join(trayDir, name), data, 0o644); err != nil {
 			log.Fatal(err)
 		}
-	}
-
-	// PNG-payload icns types: ic07=128, ic08=256, ic09=512, ic10=1024.
-	types := []struct {
-		tag  string
-		size int
-	}{{"ic07", 128}, {"ic08", 256}, {"ic09", 512}, {"ic10", 1024}}
-	var body bytes.Buffer
-	for _, t := range types {
-		data := encode(s.appIcon(t.size))
-		body.WriteString(t.tag)
-		_ = binary.Write(&body, binary.BigEndian, uint32(8+len(data)))
-		body.Write(data)
-	}
-	var out bytes.Buffer
-	out.WriteString("icns")
-	_ = binary.Write(&out, binary.BigEndian, uint32(8+body.Len()))
-	out.Write(body.Bytes())
-	if err := os.WriteFile(os.Args[3], out.Bytes(), 0o644); err != nil {
-		log.Fatal(err)
 	}
 }
