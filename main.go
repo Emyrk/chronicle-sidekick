@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -265,27 +266,56 @@ func removeWoWPath(st *store.State, path string) {
 	st.WoWPaths = append([]string(nil), kept...)
 }
 
-// installs returns every configured WoW client. State from releases that only
-// supported one folder is treated as a one-element list. Auto-detection is used
-// only when the user has not configured any folders.
+// installs returns every automatically detected and manually configured WoW
+// client. State from releases that only supported one folder is treated as a
+// one-element manual list.
 func (a *app) installs() []wowdir.Install {
-	paths := configuredWoWPaths(a.store.Get())
+	st := a.store.Get()
+	var automatic []wowdir.Install
+	if !st.DisableAutomaticWoWDetection {
+		if a.detectWoW != nil {
+			automatic = a.detectWoW()
+		} else {
+			automatic = wowdir.Detect(wowdir.StandardRoots(), a.layout)
+		}
+	}
+	return a.installsFrom(st, automatic)
+}
 
-	var found []wowdir.Install
-	if len(paths) == 0 {
-		found = wowdir.Detect(wowdir.StandardRoots(), a.layout)
-	} else {
-		seen := map[string]bool{}
-		for _, path := range paths {
-			installs, err := wowdir.Resolve(path, a.layout)
-			if err != nil {
-				continue
-			}
-			for _, install := range installs {
-				if !seen[install.Dir] {
-					seen[install.Dir] = true
-					found = append(found, install)
-				}
+func canonicalWoWDir(path string) string {
+	path = filepath.Clean(path)
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return path
+}
+
+func (a *app) installsFrom(st store.State, automatic []wowdir.Install) []wowdir.Install {
+	found := make([]wowdir.Install, 0, len(automatic))
+	seen := make(map[string]bool, len(automatic))
+	for _, install := range automatic {
+		key := canonicalWoWDir(install.Dir)
+		if !seen[key] {
+			seen[key] = true
+			found = append(found, install)
+		}
+	}
+	for _, path := range configuredWoWPaths(st) {
+		installs, err := wowdir.Resolve(path, a.layout)
+		if err != nil {
+			continue
+		}
+		for _, install := range installs {
+			key := canonicalWoWDir(install.Dir)
+			if !seen[key] {
+				seen[key] = true
+				found = append(found, install)
 			}
 		}
 	}

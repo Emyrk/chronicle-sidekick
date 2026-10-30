@@ -238,6 +238,7 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Update(func(s *store.State) {
 		s.WoWPaths = []string{capy, warmane, capy}
+		s.DisableAutomaticWoWDetection = true
 	}))
 
 	a := &app{store: st, layout: tenant.DefaultLayout}
@@ -249,13 +250,49 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.Equal(t, "https://warmane.chronicleclassic.com", got[1].BaseURL)
 }
 
+func TestInstallsCombinesAutomaticAndManualFolders(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	capy := fakeLegacyInstall(t, root, "Capy", "apac.capycraft.io")
+	warmane := fakeLegacyInstall(t, root, "Warmane", "logon.warmane.com")
+	automatic := filepath.Join(root, "Automatic")
+
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	require.NoError(t, st.Update(func(s *store.State) { s.WoWPaths = []string{capy, warmane} }))
+
+	a := &app{
+		store: st, layout: tenant.DefaultLayout,
+		detectWoW: func() []wowdir.Install {
+			return []wowdir.Install{
+				{Flavor: "Automatic", Dir: automatic},
+				{Flavor: "CapyCraft", Dir: filepath.Join(capy, "folder", "..")},
+			}
+		},
+	}
+	got := a.installs()
+	require.Len(t, got, 3)
+	require.Equal(t, automatic, got[0].Dir)
+	require.Equal(t, capy, got[1].Dir)
+	require.Equal(t, warmane, got[2].Dir)
+
+	require.NoError(t, st.Update(func(s *store.State) { s.DisableAutomaticWoWDetection = true }))
+	got = a.installs()
+	require.Len(t, got, 2)
+	require.Equal(t, capy, got[0].Dir)
+	require.Equal(t, warmane, got[1].Dir)
+}
+
 func TestInstallsReadsLegacySingleWoWPath(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	octo := fakeLegacyInstall(t, root, "Octo", "play.octowow.st")
 	st, err := store.Open(filepath.Join(root, "state.json"))
 	require.NoError(t, err)
-	require.NoError(t, st.Update(func(s *store.State) { s.WoWPath = octo }))
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPath = octo
+		s.DisableAutomaticWoWDetection = true
+	}))
 
 	a := &app{store: st, layout: tenant.DefaultLayout}
 	got := a.installs()

@@ -33,6 +33,9 @@ type State struct {
 	// WoWPaths are user-selected WoW folders. Multiple clients can be watched
 	// and routed independently by their realmlists.
 	WoWPaths []string `json:"wow_paths,omitempty"`
+	// DisableAutomaticWoWDetection turns off scanning standard install locations.
+	// The zero value keeps automatic detection enabled for existing installations.
+	DisableAutomaticWoWDetection bool `json:"disable_automatic_wow_detection,omitempty"`
 	// KeepLog turns off renaming the combat log after it was uploaded. The
 	// zero value archives, which is the default.
 	KeepLog bool `json:"keep_log,omitempty"`
