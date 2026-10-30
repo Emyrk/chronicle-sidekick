@@ -119,7 +119,7 @@ func statusDotMasks(bounds image.Rectangle) (*image.Alpha, *image.Alpha) {
 	w, h := float64(bounds.Dx()), float64(bounds.Dy())
 	cx := float64(bounds.Min.X) + w*0.78
 	cy := float64(bounds.Min.Y) + h*0.78
-	return circleMask(bounds, cx, cy, w*0.18), circleMask(bounds, cx, cy, w*0.12)
+	return circleMask(bounds, cx, cy, w*0.20), circleMask(bounds, cx, cy, w*0.14)
 }
 
 func circleMask(bounds image.Rectangle, cx, cy, radius float64) *image.Alpha {
