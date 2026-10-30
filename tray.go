@@ -598,11 +598,17 @@ func (a *app) detectWoWFolders(ctx context.Context) {
 }
 
 func (a *app) setWoWMenuTitle(count int) {
-	if count == 0 {
-		a.items.wows.SetTitle("World of Warcraft folders (automatic)")
-		return
+	a.items.wows.SetTitle(wowMenuTitle(count, useAutomaticWoWFallback(a.store.Get())))
+}
+
+func wowMenuTitle(count int, automaticFallback bool) string {
+	if count == 0 && automaticFallback {
+		return "World of Warcraft folders (automatic)"
 	}
-	a.items.wows.SetTitle(fmt.Sprintf("World of Warcraft folders (%d)", count))
+	if count == 0 {
+		return "World of Warcraft folders"
+	}
+	return fmt.Sprintf("World of Warcraft folders (%d)", count)
 }
 
 func wowFolderError(err error) (title, message string) {

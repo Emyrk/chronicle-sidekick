@@ -173,6 +173,13 @@ func TestPairingStatusShowsDeviceCode(t *testing.T) {
 	require.Equal(t, "Code ABCD-EFGH: approve in your browser…", pairingStatus("ABCD-EFGH"))
 }
 
+func TestWoWMenuTitleDistinguishesAutomaticFallback(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "World of Warcraft folders (automatic)", wowMenuTitle(0, true))
+	require.Equal(t, "World of Warcraft folders", wowMenuTitle(0, false))
+	require.Equal(t, "World of Warcraft folders (2)", wowMenuTitle(2, false))
+}
+
 func TestAddAndRemoveWoWPaths(t *testing.T) {
 	t.Parallel()
 	st := store.State{WoWPath: filepath.Join("old", "wow")}
