@@ -114,7 +114,7 @@ func (a *app) onReady(ctx context.Context) {
 	a.setWoWMenuTitle(len(a.items.wowFolders))
 	a.refreshUploadMenu(ctx)
 	choose := systray.AddMenuItem("Add WoW folder…", "Watch another World of Warcraft installation")
-	automaticFolders := systray.AddMenuItemCheckbox("Automatically detect WoW folders", "Scan common install locations in addition to manually selected folders", !a.store.Get().DisableAutomaticWoWDetection)
+	automaticFolders := systray.AddMenuItemCheckbox("Automatically detect WoW folders", "Scan common install locations in addition to manually selected folders", automaticWoWDetectionEnabled(a.store.Get()))
 	archive := systray.AddMenuItemCheckbox("Archive the log after upload", "Rename the combat log once it is uploaded so the next session starts a fresh one", !a.store.Get().KeepLog)
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
@@ -159,7 +159,7 @@ func (a *app) onReady(ctx context.Context) {
 				a.chooseFolder(ctx)
 			case <-automaticFolders.ClickedCh:
 				on := !automaticFolders.Checked()
-				if err := a.store.Update(func(s *store.State) { s.DisableAutomaticWoWDetection = !on }); err != nil {
+				if err := a.store.Update(func(s *store.State) { setAutomaticWoWDetection(s, on) }); err != nil {
 					a.logger.Error("automatic wow detection", "err", err)
 					notify("Chronicle", "Couldn't change automatic WoW detection.")
 					continue

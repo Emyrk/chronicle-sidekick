@@ -187,6 +187,24 @@ func TestAddAndRemoveWoWPaths(t *testing.T) {
 	require.Empty(t, st.WoWPaths)
 }
 
+func TestAutomaticWoWDetectionSettingPersists(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.Open(path)
+	require.NoError(t, err)
+	require.True(t, automaticWoWDetectionEnabled(st.Get()))
+
+	require.NoError(t, st.Update(func(s *store.State) { setAutomaticWoWDetection(s, false) }))
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.False(t, automaticWoWDetectionEnabled(again.Get()))
+
+	require.NoError(t, again.Update(func(s *store.State) { setAutomaticWoWDetection(s, true) }))
+	again, err = store.Open(path)
+	require.NoError(t, err)
+	require.True(t, automaticWoWDetectionEnabled(again.Get()))
+}
+
 func TestWoWUploadTargets(t *testing.T) {
 	t.Parallel()
 	installs := []wowdir.Install{

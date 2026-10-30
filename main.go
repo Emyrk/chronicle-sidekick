@@ -266,6 +266,14 @@ func removeWoWPath(st *store.State, path string) {
 	st.WoWPaths = append([]string(nil), kept...)
 }
 
+func automaticWoWDetectionEnabled(st store.State) bool {
+	return !st.DisableAutomaticWoWDetection
+}
+
+func setAutomaticWoWDetection(st *store.State, enabled bool) {
+	st.DisableAutomaticWoWDetection = !enabled
+}
+
 // installs returns every automatically detected and manually configured WoW
 // client. State from releases that only supported one folder is treated as a
 // one-element manual list.
