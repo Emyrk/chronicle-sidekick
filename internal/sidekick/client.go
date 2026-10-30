@@ -125,7 +125,7 @@ func (c SidekickConfig) Validate() error {
 	if c.Version != CurrentConfigVersion {
 		return fmt.Errorf("unsupported Sidekick config version %d", c.Version)
 	}
-	if c.Archive.RetentionDays < 1 || c.Archive.RetentionDays > 365 {
+	if c.Archive.Enabled && (c.Archive.RetentionDays < 1 || c.Archive.RetentionDays > 365) {
 		return fmt.Errorf("archive retention days must be between 1 and 365")
 	}
 	capabilities := AutoUploadCapabilities()

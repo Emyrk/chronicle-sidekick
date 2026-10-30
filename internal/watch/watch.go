@@ -237,6 +237,15 @@ func (t *Tracker) CreatedSince(since time.Time) bool {
 	return false
 }
 
+// Forget removes path from the tracker after a stopped client's live log is
+// moved into Sidekick's managed archive. A new live file at the same path must
+// start as a fresh log even when it happens to have the same size.
+func (t *Tracker) Forget(path string) {
+	delete(t.files, path)
+	delete(t.wasRunning, path)
+	delete(t.exitedAt, path)
+}
+
 // MarkUploaded records that size bytes of path reached the server.
 func (t *Tracker) MarkUploaded(path string, size int64) {
 	if tr := t.files[path]; tr != nil {

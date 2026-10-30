@@ -132,6 +132,19 @@ func TestTracker(t *testing.T) {
 	})
 }
 
+func TestTrackerForgetTreatsSamePathAsNewLog(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2026, 1, 1, 20, 0, 0, 0, time.UTC)
+	files := []watch.File{{Path: "log", Size: 100}}
+	tr := watch.NewTracker(nil)
+	tr.Observe(t0, files, false, true, watch.Trigger{})
+	tr.MarkUploaded("log", 100)
+	tr.Forget("log")
+
+	up, _ := tr.Observe(t0.Add(time.Minute), files, false, true, watch.Trigger{})
+	require.Equal(t, files, up)
+}
+
 func TestTrackerArchive(t *testing.T) {
 	t.Parallel()
 	t0 := time.Date(2026, 1, 1, 20, 0, 0, 0, time.UTC)

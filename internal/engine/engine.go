@@ -153,20 +153,21 @@ type uploadRequest struct {
 
 // job is one log waiting to be (or being) uploaded.
 type job struct {
-	path         string
-	size         int64
-	baseURL      string
-	install      wowdir.Install
-	running      bool
-	startedAt    time.Time
-	exitedAt     time.Time
-	queuedAt     time.Time
-	snapshotPath string
-	storagePath  string
-	groupID      string
-	appendLogID  string
-	uploadID     string
-	sequence     int
+	path          string
+	size          int64
+	baseURL       string
+	install       wowdir.Install
+	running       bool
+	startedAt     time.Time
+	exitedAt      time.Time
+	queuedAt      time.Time
+	snapshotPath  string
+	storagePath   string
+	groupID       string
+	appendLogID   string
+	uploadID      string
+	sequence      int
+	sourceRemoved bool
 }
 
 const exitFinalizeAfter = 30 * time.Second
@@ -195,7 +196,7 @@ func New(cfg Config) *Engine {
 		cfg.Logger = slog.Default()
 	}
 	st := pruneUploaded(cfg.Store, cfg.Logger)
-	return &Engine{
+	e := &Engine{
 		cfg:            cfg,
 		tracker:        watch.NewTracker(st.Uploaded),
 		manual:         make(chan uploadRequest, 1),
@@ -214,6 +215,60 @@ func New(cfg Config) *Engine {
 			case <-t.C:
 			}
 		},
+	}
+	e.restorePendingArchives(st)
+	return e
+}
+
+func (e *Engine) restorePendingArchives(st store.State) {
+	if e.cfg.Installs == nil {
+		return
+	}
+	installs := e.cfg.Installs()
+	for _, group := range st.ArchiveGroups {
+		if !group.Pending {
+			continue
+		}
+		var combatPath, storagePath string
+		for _, path := range group.Files {
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+			if filepath.Base(path) == "ChronicleSidekickBridgeWoTLK.lua" {
+				storagePath = path
+			} else if strings.HasSuffix(filepath.Base(path), "_CombatLog.txt") {
+				combatPath = path
+			}
+		}
+		if combatPath == "" {
+			continue
+		}
+		info, err := os.Stat(combatPath)
+		if err != nil || info.Size() == 0 {
+			continue
+		}
+		var install wowdir.Install
+		for _, candidate := range installs {
+			if candidate.Dir == group.InstallDirectory {
+				install = candidate
+				break
+			}
+		}
+		if install.Dir == "" {
+			continue
+		}
+		j := job{
+			path: combatPath, size: info.Size(), baseURL: install.BaseURL, install: install,
+			queuedAt: group.CreatedAt, exitedAt: group.LastExitAt,
+			snapshotPath: combatPath, storagePath: storagePath, groupID: group.ID,
+			sourceRemoved: true,
+		}
+		if group.LogID != "" {
+			j.appendLogID = group.LogID
+			j.uploadID = group.UploadID
+			j.sequence = group.ChunkSequence
+		}
+		e.blocked = append(e.blocked, j)
 	}
 }
 
@@ -414,6 +469,14 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	token := e.currentToken(now)
 	needAuth := token == "" || token == e.rejectedToken
 	if !needAuth {
+		if len(e.blocked) > 0 {
+			e.pending = append(e.pending, e.blocked...)
+			e.blocked = nil
+			select {
+			case e.kick <- struct{}{}:
+			default:
+			}
+		}
 		e.enqueue(queue, installByFile)
 	}
 	if e.busy() {
@@ -637,7 +700,7 @@ func (e *Engine) worker(ctx context.Context) {
 	}
 }
 
-func (e *Engine) prepareSnapshot(j *job) error {
+func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	st := e.cfg.Store.Get()
 	group, appendExisting := selectAppendGroup(st.ArchiveGroups, j.install.Dir, j.startedAt)
 	if !appendExisting {
@@ -657,6 +720,13 @@ func (e *Engine) prepareSnapshot(j *job) error {
 	}
 	group.Pending = true
 	group.DeleteAfter = time.Time{}
+
+	dir := filepath.Join(j.install.Dir, "ChronicleSidekick", group.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create archive directory: %w", err)
+	}
+	combatPath := archiveCombatPath(dir, j.queuedAt)
+	group.Files = append(group.Files, combatPath)
 	if err := e.cfg.Store.Update(func(s *store.State) {
 		if s.ArchiveGroups == nil {
 			s.ArchiveGroups = map[string]store.ArchiveGroup{}
@@ -666,42 +736,48 @@ func (e *Engine) prepareSnapshot(j *job) error {
 		return fmt.Errorf("persist archive group: %w", err)
 	}
 
-	dir := filepath.Join(j.install.Dir, "ChronicleSidekick", group.ID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create archive directory: %w", err)
+	// The process may restart after the finalization poll but before the worker
+	// reaches this job. Copy in that case so an open writer cannot follow a
+	// renamed inode into the archive.
+	running := j.running
+	if e.cfg.RunningInstall != nil {
+		running = e.cfg.RunningInstall(ctx, j.install)
+	} else if e.cfg.Running != nil {
+		running = e.cfg.Running(ctx, []string{j.install.Dir})
 	}
-	combatPath := archiveCombatPath(dir, j.queuedAt)
-	if j.running {
-		if err := copySnapshot(j.path, combatPath, j.size); err != nil {
-			return fmt.Errorf("copy combat log snapshot: %w", err)
-		}
-	} else {
+	if err := copySnapshot(j.path, combatPath, j.size); err != nil {
+		return fmt.Errorf("copy combat log snapshot: %w", err)
+	}
+	if !running {
 		info, err := os.Stat(j.path)
 		if err != nil {
-			return fmt.Errorf("stat combat log before move: %w", err)
+			return fmt.Errorf("stat combat log before removal: %w", err)
 		}
 		if info.Size() != j.size {
 			return fmt.Errorf("%s changed before it could be archived", j.path)
 		}
-		if err := os.Rename(j.path, combatPath); err != nil {
-			return fmt.Errorf("move combat log snapshot: %w", err)
+		if err := os.Remove(j.path); err != nil {
+			return fmt.Errorf("remove archived combat log: %w", err)
 		}
+		j.sourceRemoved = true
+		e.mu.Lock()
+		e.tracker.Forget(j.path)
+		e.mu.Unlock()
 	}
 
 	storagePath, err := snapshotNewestSidecar(j.install.Dir, dir)
 	if err != nil {
-		return err
+		e.cfg.Logger.Warn("snapshotting optional Sidekick storage", "err", err)
+		storagePath = ""
 	}
-	files := []string{combatPath}
 	if storagePath != "" {
-		files = append(files, storagePath)
-	}
-	if err := e.cfg.Store.Update(func(s *store.State) {
-		g := s.ArchiveGroups[group.ID]
-		g.Files = append(g.Files, files...)
-		s.ArchiveGroups[group.ID] = g
-	}); err != nil {
-		return fmt.Errorf("persist archive files: %w", err)
+		if err := e.cfg.Store.Update(func(s *store.State) {
+			g := s.ArchiveGroups[group.ID]
+			g.Files = append(g.Files, storagePath)
+			s.ArchiveGroups[group.ID] = g
+		}); err != nil {
+			return fmt.Errorf("persist Sidekick storage archive: %w", err)
+		}
 	}
 	j.snapshotPath = combatPath
 	j.storagePath = storagePath
@@ -815,7 +891,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 	j.baseURL = baseURL
 	j.install.BaseURL = baseURL
 	if j.snapshotPath == "" {
-		if err := e.prepareSnapshot(&j); err != nil {
+		if err := e.prepareSnapshot(ctx, &j); err != nil {
 			log.Error("preparing archive snapshot", "err", err)
 			e.fail(j, err)
 			return false, j
@@ -939,7 +1015,11 @@ func (e *Engine) skip(j job, src string, size int64, reportURL string) {
 		if s.Uploaded == nil {
 			s.Uploaded = map[string]int64{}
 		}
-		s.Uploaded[j.path] = j.size
+		if j.sourceRemoved {
+			delete(s.Uploaded, j.path)
+		} else {
+			s.Uploaded[j.path] = j.size
+		}
 		s.RecordLog(src, store.Log{Size: max(size, j.size), ReportURL: reportURL, At: now})
 		markGroupSuccess(s, j.groupID, "", reportURL, now)
 		if reportURL != "" {
@@ -983,7 +1063,11 @@ func (e *Engine) finish(f job, src string, res upload.Result) {
 		if s.Uploaded == nil {
 			s.Uploaded = map[string]int64{}
 		}
-		s.Uploaded[f.path] = f.size
+		if f.sourceRemoved {
+			delete(s.Uploaded, f.path)
+		} else {
+			s.Uploaded[f.path] = f.size
+		}
 		if src != "" {
 			s.RecordLog(src, store.Log{Size: f.size, ReportURL: res.ReportURL, At: now})
 		}

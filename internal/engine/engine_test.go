@@ -27,26 +27,27 @@ type harness struct {
 	st      *store.Store
 	logPath string
 
-	mu              sync.Mutex
-	running         bool
-	runningInstalls map[string]bool
-	token           string
-	results         []error // consumed one per Upload call
-	res             upload.Result
-	uploads         int
-	sources         []string // the source id of each Upload call
-	destinations    []string // Chronicle tenant URL of each Upload call
-	fast            []bool   // the fast flag of each Upload call
-	baseURL         string   // tenant URL returned with the test install
-	installs        []wowdir.Install
-	installsFn      func() []wowdir.Install
-	autoUpload      func(wowdir.Install) watch.Trigger
-	uploadPaths     []string
-	uploadRequests  []engine.UploadRequest
-	lookups         int           // pre-flight source lookups made
-	gate            chan struct{} // when set, Upload blocks until it is closed
-	notified        []string
-	statuses        []engine.Status
+	mu               sync.Mutex
+	running          bool
+	runningInstalls  map[string]bool
+	runningInstallFn func(wowdir.Install) bool
+	token            string
+	results          []error // consumed one per Upload call
+	res              upload.Result
+	uploads          int
+	sources          []string // the source id of each Upload call
+	destinations     []string // Chronicle tenant URL of each Upload call
+	fast             []bool   // the fast flag of each Upload call
+	baseURL          string   // tenant URL returned with the test install
+	installs         []wowdir.Install
+	installsFn       func() []wowdir.Install
+	autoUpload       func(wowdir.Install) watch.Trigger
+	uploadPaths      []string
+	uploadRequests   []engine.UploadRequest
+	lookups          int           // pre-flight source lookups made
+	gate             chan struct{} // when set, Upload blocks until it is closed
+	notified         []string
+	statuses         []engine.Status
 }
 
 func newHarness(t testing.TB) *harness { return newHarnessToken(t, nil) }
@@ -134,6 +135,9 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 		RunningInstall: func(_ context.Context, install wowdir.Install) bool {
 			h.mu.Lock()
 			defer h.mu.Unlock()
+			if h.runningInstallFn != nil {
+				return h.runningInstallFn(install)
+			}
 			if h.runningInstalls != nil {
 				return h.runningInstalls[install.Dir]
 			}
@@ -241,7 +245,9 @@ func TestEngineUploadsOnlyOnManualRequest(t *testing.T) {
 	require.Equal(t, engine.StateUploaded, last.State)
 	require.Equal(t, "https://x/logs/1", last.ReportURL)
 	require.Equal(t, []string{"Log uploaded"}, h.notified)
-	require.Equal(t, int64(len("some combat and more")), h.st.Get().Uploaded[h.logPath])
+	_, tracked := h.st.Get().Uploaded[h.logPath]
+	require.False(t, tracked, "a removed live path must not suppress a future same-sized log")
+	require.NoFileExists(t, h.logPath)
 
 	// Nothing more is sent without another request.
 	h.step(t, t0.Add(12*time.Minute), false)
@@ -484,6 +490,23 @@ func TestEngineSnapshotsBeforeUploadAndMovesStoppedLog(t *testing.T) {
 	}
 }
 
+func TestEngineRechecksInstallBeforeRemovingLiveLog(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	var calls atomic.Int32
+	h.runningInstallFn = func(wowdir.Install) bool {
+		return calls.Add(1) > 1 // stopped during poll, restarted before snapshot preparation
+	}
+	t0 := time.Date(2026, time.January, 2, 6, 15, 4, 0, time.Local)
+
+	h.step(t, t0, true)
+
+	require.GreaterOrEqual(t, calls.Load(), int32(2))
+	require.FileExists(t, h.logPath)
+	require.Len(t, h.uploadPaths, 1)
+	require.FileExists(t, h.uploadPaths[0])
+}
+
 func TestEngineManualUploadCopiesRunningLog(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -520,6 +543,20 @@ func TestEngineSnapshotsNewestSidecar(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "new", string(body))
 	require.Equal(t, filepath.Dir(h.uploadRequests[0].Path), filepath.Dir(storage))
+}
+
+func TestEngineUploadsCombatLogWhenOptionalSidecarCannotBeCopied(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	wowDir := filepath.Dir(filepath.Dir(h.logPath))
+	brokenSidecar := filepath.Join(wowDir, "WTF", "Account", "broken", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua")
+	require.NoError(t, os.MkdirAll(brokenSidecar, 0o755))
+
+	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
+
+	require.Len(t, h.uploadRequests, 1)
+	require.Empty(t, h.uploadRequests[0].SidekickStoragePath)
+	require.FileExists(t, h.uploadRequests[0].Path)
 }
 
 func TestEngineAppendsAfterRestartWithinWindow(t *testing.T) {
@@ -617,6 +654,55 @@ func TestEngineFailedUploadPreservesPendingArchive(t *testing.T) {
 		require.True(t, group.Pending)
 		require.Zero(t, group.DeleteAfter)
 	}
+}
+
+func TestEngineRecoversPendingArchiveAfterRestart(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	wowDir := filepath.Join(root, "wow")
+	archiveDir := filepath.Join(wowDir, "ChronicleSidekick", "group-1")
+	require.NoError(t, os.MkdirAll(archiveDir, 0o755))
+	combatPath := filepath.Join(archiveDir, "Jan_01_26_12_00_CombatLog.txt")
+	require.NoError(t, os.WriteFile(combatPath, []byte("some combat"), 0o600))
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.ArchiveGroups = map[string]store.ArchiveGroup{
+			"group-1": {
+				ID: "group-1", InstallDirectory: wowDir, InstallID: "wowdir-1",
+				CreatedAt: now, Pending: true, Files: []string{combatPath},
+			},
+		}
+	}))
+
+	requests := make(chan engine.UploadRequest, 1)
+	e := engine.New(engine.Config{
+		Store: st,
+		Installs: func() []wowdir.Install {
+			return []wowdir.Install{{Dir: wowDir, LogDir: filepath.Join(wowDir, "Logs"), BaseURL: "https://x"}}
+		},
+		Token: func() string { return "tok" },
+		Upload: func(_ context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
+			requests <- req
+			return upload.Result{LogID: "log-1", ReportURL: "https://x/logs/1"}, nil
+		},
+		Running:        func(context.Context, []string) bool { return false },
+		RunningInstall: func(context.Context, wowdir.Install) bool { return false },
+		Notify:         func(string, string) {},
+	})
+	e.Step(context.Background(), now.Add(time.Minute), false)
+	require.Eventually(t, func() bool { return !e.Busy() }, 5*time.Second, time.Millisecond)
+
+	select {
+	case req := <-requests:
+		require.Equal(t, combatPath, req.Path)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending archive was not uploaded")
+	}
+	group := st.Get().ArchiveGroups["group-1"]
+	require.False(t, group.Pending)
+	require.Equal(t, "log-1", group.LogID)
 }
 
 func TestEngineWaitsForFirstFightAfterNewLog(t *testing.T) {
