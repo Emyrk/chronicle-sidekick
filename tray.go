@@ -113,7 +113,7 @@ func (a *app) onReady(ctx context.Context) {
 	a.setWoWMenuTitle(len(a.items.wowFolders))
 	a.refreshUploadMenu(ctx)
 	choose := systray.AddMenuItem("Add WoW folder…", "Watch another World of Warcraft installation")
-	clearFolders := systray.AddMenuItem("Use automatic WoW detection", "Forget manually selected WoW folders")
+	detectFolders := systray.AddMenuItem("Run automatic WoW detection…", "Scan common install locations and add any WoW folders found")
 	archive := systray.AddMenuItemCheckbox("Archive the log after upload", "Rename the combat log once it is uploaded so the next session starts a fresh one", !a.store.Get().KeepLog)
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
@@ -156,8 +156,8 @@ func (a *app) onReady(ctx context.Context) {
 				go a.installUpdate(ctx, true)
 			case <-choose.ClickedCh:
 				a.chooseFolder(ctx)
-			case <-clearFolders.ClickedCh:
-				a.clearWoWFolders(ctx)
+			case <-detectFolders.ClickedCh:
+				a.detectWoWFolders(ctx)
 			case <-archive.ClickedCh:
 				on := !archive.Checked()
 				a.toggle(archive, on)
@@ -570,33 +570,45 @@ func (a *app) removeWoWFolder(ctx context.Context, path string) {
 	a.setWoWMenuTitle(count)
 }
 
-func (a *app) clearWoWFolders(ctx context.Context) {
-	if err := a.store.Update(func(s *store.State) {
-		s.WoWPath = ""
-		s.WoWPaths = nil
-	}); err != nil {
-		a.logger.Error("clear wow folders", "err", err)
+func (a *app) detectWoWFolders(ctx context.Context) {
+	var added []string
+	found := wowdir.Detect(wowdir.StandardRoots(), a.layout)
+	if err := a.store.Update(func(s *store.State) { added = addDetectedWoWPaths(s, found, a.layout) }); err != nil {
+		a.logger.Error("save automatically detected wow folders", "err", err)
+		notify("Chronicle", "Couldn't save automatically detected WoW folders.")
 		return
 	}
-
-	a.mu.Lock()
-	entries := a.items.wowFolders
-	a.items.wowFolders = map[string]wowMenuEntry{}
-	a.mu.Unlock()
-	for _, entry := range entries {
-		entry.cancel()
-		entry.item.Remove()
+	for _, path := range added {
+		a.addWoWMenuEntry(ctx, path)
 	}
 	a.refreshUploadMenu(ctx)
-	a.setWoWMenuTitle(0)
+	a.mu.Lock()
+	count := len(a.items.wowFolders)
+	a.mu.Unlock()
+	a.setWoWMenuTitle(count)
+	if len(added) == 0 {
+		notify("Chronicle", "No additional WoW folders were found in common install locations.")
+		return
+	}
+	message := "Added one automatically detected WoW folder."
+	if len(added) > 1 {
+		message = fmt.Sprintf("Added %d automatically detected WoW folders.", len(added))
+	}
+	notify("Chronicle", message)
 }
 
 func (a *app) setWoWMenuTitle(count int) {
-	if count == 0 {
-		a.items.wows.SetTitle("World of Warcraft folders (automatic)")
-		return
+	a.items.wows.SetTitle(wowMenuTitle(count, useAutomaticWoWFallback(a.store.Get())))
+}
+
+func wowMenuTitle(count int, automaticFallback bool) string {
+	if count == 0 && automaticFallback {
+		return "World of Warcraft folders (automatic)"
 	}
-	a.items.wows.SetTitle(fmt.Sprintf("World of Warcraft folders (%d)", count))
+	if count == 0 {
+		return "World of Warcraft folders"
+	}
+	return fmt.Sprintf("World of Warcraft folders (%d)", count)
 }
 
 func wowFolderError(err error) (title, message string) {

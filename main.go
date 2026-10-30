@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -107,6 +108,7 @@ func run() error {
 		if err := st.Update(func(s *store.State) {
 			s.WoWPath = ""
 			s.WoWPaths = []string{filepath.Clean(*wowPath)}
+			s.WoWPathsSet = true
 		}); err != nil {
 			return err
 		}
@@ -238,6 +240,7 @@ func configuredWoWPaths(st store.State) []string {
 }
 
 func addWoWPath(st *store.State, path string) bool {
+	st.WoWPathsSet = true
 	path = filepath.Clean(path)
 	paths := configuredWoWPaths(*st)
 	for _, existing := range paths {
@@ -252,7 +255,50 @@ func addWoWPath(st *store.State, path string) bool {
 	return true
 }
 
+func canonicalWoWPath(path string) string {
+	path = filepath.Clean(path)
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return path
+}
+
+func addDetectedWoWPaths(st *store.State, installs []wowdir.Install, layout tenant.Layout) []string {
+	seen := map[string]bool{}
+	for _, path := range configuredWoWPaths(*st) {
+		seen[canonicalWoWPath(path)] = true
+		resolved, err := wowdir.Resolve(path, layout)
+		if err != nil {
+			continue
+		}
+		for _, install := range resolved {
+			seen[canonicalWoWPath(install.Dir)] = true
+		}
+	}
+
+	var added []string
+	for _, install := range installs {
+		path := filepath.Clean(install.Dir)
+		key := canonicalWoWPath(path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if addWoWPath(st, path) {
+			added = append(added, path)
+		}
+	}
+	return added
+}
+
 func removeWoWPath(st *store.State, path string) {
+	st.WoWPathsSet = true
 	path = filepath.Clean(path)
 	paths := configuredWoWPaths(*st)
 	kept := paths[:0]
@@ -265,14 +311,19 @@ func removeWoWPath(st *store.State, path string) {
 	st.WoWPaths = append([]string(nil), kept...)
 }
 
+func useAutomaticWoWFallback(st store.State) bool {
+	return len(configuredWoWPaths(st)) == 0 && !st.WoWPathsSet
+}
+
 // installs returns every configured WoW client. State from releases that only
 // supported one folder is treated as a one-element list. Auto-detection is used
-// only when the user has not configured any folders.
+// only for fresh and older state whose folder list has never been managed.
 func (a *app) installs() []wowdir.Install {
-	paths := configuredWoWPaths(a.store.Get())
+	st := a.store.Get()
+	paths := configuredWoWPaths(st)
 
 	var found []wowdir.Install
-	if len(paths) == 0 {
+	if useAutomaticWoWFallback(st) {
 		found = wowdir.Detect(wowdir.StandardRoots(), a.layout)
 	} else {
 		seen := map[string]bool{}
@@ -282,8 +333,9 @@ func (a *app) installs() []wowdir.Install {
 				continue
 			}
 			for _, install := range installs {
-				if !seen[install.Dir] {
-					seen[install.Dir] = true
+				key := canonicalWoWPath(install.Dir)
+				if !seen[key] {
+					seen[key] = true
 					found = append(found, install)
 				}
 			}

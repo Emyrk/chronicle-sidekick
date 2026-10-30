@@ -33,6 +33,9 @@ type State struct {
 	// WoWPaths are user-selected WoW folders. Multiple clients can be watched
 	// and routed independently by their realmlists.
 	WoWPaths []string `json:"wow_paths,omitempty"`
+	// WoWPathsSet distinguishes an explicitly managed, possibly empty folder list
+	// from older state that should retain automatic-detection fallback behavior.
+	WoWPathsSet bool `json:"wow_paths_set,omitempty"`
 	// KeepLog turns off renaming the combat log after it was uploaded. The
 	// zero value archives, which is the default.
 	KeepLog bool `json:"keep_log,omitempty"`
