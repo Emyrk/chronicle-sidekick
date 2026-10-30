@@ -58,8 +58,8 @@ func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
 
 	s, err := store.Open(path)
 	require.NoError(t, err)
-	require.False(t, s.Get().EffectiveConfig().AutoUpload.Enabled)
-	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", s.Get().EffectiveConfigHash())
+	require.Empty(t, s.Get().EffectiveConfig().WoWDirectories)
+	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", s.Get().EffectiveConfigHash())
 }
 
 func TestManagedConfigRoundTrip(t *testing.T) {
@@ -68,8 +68,10 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 	s, err := store.Open(path)
 	require.NoError(t, err)
 	cfg := sidekick.SidekickConfig{
-		Version:    sidekick.CurrentConfigVersion,
-		AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
 	}
 	require.NoError(t, s.Update(func(st *store.State) {
 		st.Config = cfg
@@ -78,7 +80,7 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, cfg, again.Get().EffectiveConfig())
-	require.Equal(t, "5adfecf0ef27760f25242db79e5b41cd0b676794a2caacd2b11fb7dd88a55169", again.Get().EffectiveConfigHash())
+	require.Equal(t, "9874d12791b634bb341a687c051efcc043153b0cb8a8a2371ee168eb5dd81f0f", again.Get().EffectiveConfigHash())
 }
 
 func TestCorruptStateStartsEmpty(t *testing.T) {

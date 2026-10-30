@@ -56,6 +56,8 @@ type Config struct {
 	Store *store.Store
 	// Installs returns the flavor folders to watch right now.
 	Installs func() []wowdir.Install
+	// AutoUpload returns the automatic trigger implemented for one install.
+	AutoUpload func(wowdir.Install) watch.Trigger
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
@@ -69,8 +71,11 @@ type Config struct {
 	// unknown log is then uploaded and the server's duplicate answer recovers
 	// the report link.
 	Lookup func(ctx context.Context, token, baseURL, sourceID string) (upload.Have, error)
-	// Running reports whether WoW is running.
+	// Running reports whether any WoW client is running.
 	Running func(ctx context.Context, installDirs []string) bool
+	// RunningInstall reports whether one specific WoW installation is running.
+	// When set, it provides the per-directory lifecycle used by auto-upload.
+	RunningInstall func(context.Context, wowdir.Install) bool
 	// Notify shows a native notification.
 	Notify func(title, message string)
 	// OnStatus is called when the status changes.
@@ -277,19 +282,38 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 
 	files := watch.Files(patterns)
 	destinations := make(map[string]string, len(files))
+	triggers := make(map[string]watch.Trigger, len(files))
+	installByFile := make(map[string]string, len(files))
 	for _, f := range files {
 		for _, in := range installs {
 			if pathWithin(f.Path, in.Dir) {
 				destinations[f.Path] = in.BaseURL
+				installByFile[f.Path] = in.Dir
+				trigger := watch.Trigger{IdleAfter: e.cfg.IdleAfter}
+				if e.cfg.AutoUpload != nil {
+					trigger = e.cfg.AutoUpload(in)
+					trigger.IdleAfter = e.cfg.IdleAfter
+				}
+				triggers[f.Path] = trigger
 				break
 			}
 		}
 	}
-	running := e.cfg.Running(ctx, installDirs)
+	runningByDir := make(map[string]bool, len(installs))
+	running := false
+	if e.cfg.RunningInstall != nil {
+		for _, install := range installs {
+			isRunning := e.cfg.RunningInstall(ctx, install)
+			runningByDir[install.Dir] = isRunning
+			running = running || isRunning
+		}
+	} else {
+		running = e.cfg.Running(ctx, installDirs)
+		for _, install := range installs {
+			runningByDir[install.Dir] = running
+		}
+	}
 	st := e.cfg.Store.Get()
-	// Uploads are user-triggered for now. IdleAfter is still used to decide
-	// whether the tray should say the combat log is actively recording.
-	trig := watch.Trigger{IdleAfter: e.cfg.IdleAfter}
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {
@@ -321,7 +345,11 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	e.mu.Lock()
 	e.now = now
 	e.trackSession(now, running)
-	queue, recording := e.tracker.ObserveSelected(now, files, running, selectFile, trig)
+	queue, recording := e.tracker.ObserveConfigured(now, files, selectFile, func(f watch.File) watch.Trigger {
+		return triggers[f.Path]
+	}, func(f watch.File) bool {
+		return runningByDir[installByFile[f.Path]]
+	})
 	logging := running && e.tracker.CreatedSince(e.sessionStart)
 	if !st.KeepLog {
 		e.queueArchive(files, running)

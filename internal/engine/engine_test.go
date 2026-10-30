@@ -17,6 +17,7 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
+	"github.com/Emyrk/chronicle-sidekick/internal/watch"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
 
@@ -25,22 +26,24 @@ type harness struct {
 	st      *store.Store
 	logPath string
 
-	mu           sync.Mutex
-	running      bool
-	token        string
-	results      []error // consumed one per Upload call
-	res          upload.Result
-	uploads      int
-	sources      []string // the source id of each Upload call
-	destinations []string // Chronicle tenant URL of each Upload call
-	fast         []bool   // the fast flag of each Upload call
-	baseURL      string   // tenant URL returned with the test install
-	installs     []wowdir.Install
-	uploadPaths  []string
-	lookups      int           // pre-flight source lookups made
-	gate         chan struct{} // when set, Upload blocks until it is closed
-	notified     []string
-	statuses     []engine.Status
+	mu              sync.Mutex
+	running         bool
+	runningInstalls map[string]bool
+	token           string
+	results         []error // consumed one per Upload call
+	res             upload.Result
+	uploads         int
+	sources         []string // the source id of each Upload call
+	destinations    []string // Chronicle tenant URL of each Upload call
+	fast            []bool   // the fast flag of each Upload call
+	baseURL         string   // tenant URL returned with the test install
+	installs        []wowdir.Install
+	autoUpload      func(wowdir.Install) watch.Trigger
+	uploadPaths     []string
+	lookups         int           // pre-flight source lookups made
+	gate            chan struct{} // when set, Upload blocks until it is closed
+	notified        []string
+	statuses        []engine.Status
 }
 
 func newHarness(t testing.TB) *harness { return newHarnessToken(t, nil) }
@@ -85,6 +88,12 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			}
 			return []wowdir.Install{{Dir: filepath.Dir(logDir), LogDir: logDir, BaseURL: h.baseURL}}
 		},
+		AutoUpload: func(install wowdir.Install) watch.Trigger {
+			if h.autoUpload != nil {
+				return h.autoUpload(install)
+			}
+			return watch.Trigger{}
+		},
 		Token: func() string {
 			if tokenFn != nil {
 				return tokenFn()
@@ -114,7 +123,15 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			}
 			return res, err
 		},
-		Running:   func(context.Context, []string) bool { h.mu.Lock(); defer h.mu.Unlock(); return h.running },
+		Running: func(context.Context, []string) bool { h.mu.Lock(); defer h.mu.Unlock(); return h.running },
+		RunningInstall: func(_ context.Context, install wowdir.Install) bool {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if h.runningInstalls != nil {
+				return h.runningInstalls[install.Dir]
+			}
+			return h.running
+		},
 		Notify:    func(title, _ string) { h.notified = append(h.notified, title) },
 		OnStatus:  func(s engine.Status) { h.statuses = append(h.statuses, s) },
 		RetryBase: time.Millisecond,
@@ -196,6 +213,37 @@ func TestEngineUploadsOnlyOnManualRequest(t *testing.T) {
 	// Nothing more is sent without another request.
 	h.step(t, t0.Add(12*time.Minute), false)
 	require.Equal(t, 1, h.uploads)
+}
+
+func TestEngineAutoUploadsConfiguredInstallOnGameExit(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	firstDir := filepath.Dir(filepath.Dir(h.logPath))
+	root := filepath.Dir(firstDir)
+	secondDir := filepath.Join(root, "_y_")
+	secondLogDir := filepath.Join(secondDir, "Logs")
+	secondLog := filepath.Join(secondLogDir, "WoWCombatLog.txt")
+	require.NoError(t, os.MkdirAll(secondLogDir, 0o755))
+	require.NoError(t, os.WriteFile(secondLog, []byte("second combat"), 0o644))
+	h.installs = []wowdir.Install{
+		{Dir: firstDir, LogDir: filepath.Dir(h.logPath), BaseURL: "https://first.example"},
+		{Dir: secondDir, LogDir: secondLogDir, BaseURL: "https://second.example"},
+	}
+	h.autoUpload = func(install wowdir.Install) watch.Trigger {
+		return watch.Trigger{OnExit: install.Dir == secondDir}
+	}
+	h.runningInstalls = map[string]bool{firstDir: true, secondDir: true}
+
+	t0 := time.Now()
+	h.step(t, t0, false)
+	require.Empty(t, h.uploadPaths)
+
+	h.mu.Lock()
+	h.runningInstalls[secondDir] = false
+	h.mu.Unlock()
+	h.step(t, t0.Add(time.Minute), false)
+	require.Equal(t, []string{secondLog}, h.uploadPaths)
+	require.Equal(t, []string{"https://second.example"}, h.destinations)
 }
 
 func TestEngineRetriesOfflineThenSucceeds(t *testing.T) {

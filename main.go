@@ -137,16 +137,27 @@ func run() error {
 	if *server != "" {
 		a.uploadOverride = tn.BaseURL
 	}
+	games := map[string]*watch.Game{}
+	runningInstall := func(ctx context.Context, install wowdir.Install) bool {
+		id := sidekick.DirectoryID(install.Dir)
+		game := games[id]
+		if game == nil {
+			game = watch.NewGameForInstall(tn.Layout, nil)
+			games[id] = game
+		}
+		return game.Running(ctx, []string{install.Dir})
+	}
 	a.engine = engine.New(engine.Config{
-		Store:    st,
-		Installs: a.installs,
-		Token:    a.cachedToken,
+		Store:      st,
+		Installs:   a.installs,
+		AutoUpload: a.autoUploadTrigger,
+		Token:      a.cachedToken,
 		Upload: func(ctx context.Context, _ string, baseURL, path, sourceID string, size int64, fast bool) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
 			if err != nil {
 				return upload.Result{}, err
 			}
-			c := upload.Client{BaseURL: baseURL, Token: token, Fast: fast}
+			c := upload.Client{BaseURL: baseURL, Token: token, Format: string(a.gameFormatForPath(path)), Fast: fast}
 			return c.Upload(ctx, path, sourceID, size)
 		},
 		// Lookup is the pre-flight check for a log this machine's ledger has
@@ -160,10 +171,11 @@ func run() error {
 			c := upload.Client{BaseURL: baseURL, Token: token}
 			return c.Have(ctx, sourceID)
 		},
-		Running:  watch.NewGame(tn.Layout, nil).Running,
-		Notify:   notify,
-		OnStatus: a.onStatus,
-		Logger:   logger,
+		Running:        watch.NewGame(tn.Layout, nil).Running,
+		RunningInstall: runningInstall,
+		Notify:         notify,
+		OnStatus:       a.onStatus,
+		Logger:         logger,
 	})
 	go func() {
 		if err := upload.Ping(ctx, nil, tn.BaseURL); err != nil {
@@ -210,7 +222,30 @@ func ensureInstallation(st *store.Store) (installationInfo, error) {
 
 const maxStatusWoWDirectories = 50
 
-func sidekickStatus(installs []wowdir.Install, platform, appVersion string, startAtLogin, archiveAfterUpload bool) sidekick.Status {
+func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
+	config := a.store.Get().EffectiveConfig()
+	for _, install := range a.installs() {
+		relative, err := filepath.Rel(install.Dir, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return config.WoWDirectories[sidekick.DirectoryID(install.Dir)].GameFormat
+	}
+	return ""
+}
+
+func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
+	config, ok := a.store.Get().EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
+	if !ok {
+		return watch.Trigger{}
+	}
+	if config.GameFormat == sidekick.GameFormatWrath335a && config.AutoUpload == sidekick.AutoUploadOnGameExit {
+		return watch.Trigger{OnExit: true}
+	}
+	return watch.Trigger{}
+}
+
+func sidekickStatus(installs []wowdir.Install, platform, appVersion string, startAtLogin bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
 	}
@@ -221,12 +256,13 @@ func sidekickStatus(installs []wowdir.Install, platform, appVersion string, star
 			name = install.BaseURL
 		}
 		directories = append(directories, sidekick.WoWDirectory{
+			ID:   sidekick.DirectoryID(install.Dir),
 			Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL, Realmlist: install.Realmlist,
 		})
 	}
 	return sidekick.Status{
-		Platform: platform, Version: appVersion,
-		StartAtLogin: startAtLogin, ArchiveAfterUpload: archiveAfterUpload,
+		Platform: platform, SidekickVersion: appVersion,
+		StartAtLogin: startAtLogin, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: directories,
 		Issues:         []sidekick.Issue{},
 	}

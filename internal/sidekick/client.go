@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -18,10 +20,27 @@ const statusPath = "/api/v1/sidekick/status"
 
 // WoWDirectory is one configured World of Warcraft installation.
 type WoWDirectory struct {
+	ID            string `json:"id"`
 	Path          string `json:"path"`
 	TenantName    string `json:"tenant_name"`
 	TenantBaseURL string `json:"tenant_base_url"`
 	Realmlist     string `json:"realmlist,omitempty"`
+}
+
+// DirectoryID returns the opaque, stable-on-this-machine ID used in managed config.
+func DirectoryID(path string) string {
+	path = filepath.Clean(path)
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	sum := sha256.Sum256([]byte(path))
+	return "wowdir_" + hex.EncodeToString(sum[:])
 }
 
 // Issue is one currently active, sanitized Sidekick problem.
@@ -33,20 +52,43 @@ type Issue struct {
 
 const CurrentConfigVersion = 1
 
-// SidekickConfig is the server-managed behavior applied by Sidekick.
-type SidekickConfig struct {
-	Version    int              `json:"version"`
-	AutoUpload AutoUploadConfig `json:"auto_upload"`
+// GameFormat identifies the combat-log dialect emitted by a WoW client.
+type GameFormat string
+
+const (
+	GameFormatWrath335a GameFormat = "wotlk_3.3.5a"
+)
+
+// AutoUploadMode selects a Sidekick-owned upload trigger implementation.
+type AutoUploadMode string
+
+const (
+	AutoUploadDisabled   AutoUploadMode = "disabled"
+	AutoUploadOnGameExit AutoUploadMode = "on_game_exit"
+)
+
+// WoWDirectoryConfig is the server-managed behavior for one reported directory ID.
+type WoWDirectoryConfig struct {
+	GameFormat GameFormat     `json:"game_format"`
+	AutoUpload AutoUploadMode `json:"auto_upload"`
 }
 
-// AutoUploadConfig controls automatic combat-log uploads.
-type AutoUploadConfig struct {
-	Enabled bool `json:"enabled"`
+// SidekickConfig is the server-managed behavior applied by Sidekick.
+type SidekickConfig struct {
+	Version        int                           `json:"version"`
+	WoWDirectories map[string]WoWDirectoryConfig `json:"wow_directories"`
 }
 
 // DefaultConfig is the behavior used before Chronicle has sent a config.
 func DefaultConfig() SidekickConfig {
-	return SidekickConfig{Version: CurrentConfigVersion}
+	return SidekickConfig{Version: CurrentConfigVersion, WoWDirectories: map[string]WoWDirectoryConfig{}}
+}
+
+// AutoUploadCapabilities lists the implementations in this Sidekick build.
+func AutoUploadCapabilities() map[GameFormat][]AutoUploadMode {
+	return map[GameFormat][]AutoUploadMode{
+		GameFormatWrath335a: {AutoUploadOnGameExit},
+	}
 }
 
 // CanonicalConfigJSON returns the stable JSON representation Chronicle hashes.
@@ -71,20 +113,39 @@ func (c SidekickConfig) Validate() error {
 	if c.Version != CurrentConfigVersion {
 		return fmt.Errorf("unsupported Sidekick config version %d", c.Version)
 	}
+	capabilities := AutoUploadCapabilities()
+	for id, directory := range c.WoWDirectories {
+		modes, ok := capabilities[directory.GameFormat]
+		if !ok {
+			return fmt.Errorf("directory %s has unsupported game format %q", id, directory.GameFormat)
+		}
+		if directory.AutoUpload == AutoUploadDisabled {
+			continue
+		}
+		supported := false
+		for _, mode := range modes {
+			if mode == directory.AutoUpload {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("directory %s has unsupported auto-upload mode %q for %q", id, directory.AutoUpload, directory.GameFormat)
+		}
+	}
 	return nil
 }
 
 // Status is the complete installation snapshot sent in each heartbeat.
 type Status struct {
-	Platform   string `json:"platform,omitempty"`
-	Version    string `json:"version,omitempty"`
-	ConfigHash string `json:"config_hash,omitempty"`
+	Platform        string `json:"platform,omitempty"`
+	SidekickVersion string `json:"sidekick_version,omitempty"`
+	ConfigHash      string `json:"config_hash,omitempty"`
 	// StartAtLogin is observed local state. It is not server-managed config.
-	StartAtLogin bool `json:"start_at_login"`
-	// ArchiveAfterUpload is the local tray setting, inverse of Store.KeepLog.
-	ArchiveAfterUpload bool           `json:"archive_after_upload"`
-	WoWDirectories     []WoWDirectory `json:"wow_directories"`
-	Issues             []Issue        `json:"issues"`
+	StartAtLogin           bool                            `json:"start_at_login"`
+	AutoUploadCapabilities map[GameFormat][]AutoUploadMode `json:"auto_upload_capabilities"`
+	WoWDirectories         []WoWDirectory                  `json:"wow_directories"`
+	Issues                 []Issue                         `json:"issues"`
 }
 
 // UpdateResponse tells Sidekick which managed config Chronicle wants applied.

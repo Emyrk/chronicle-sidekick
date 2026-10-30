@@ -108,14 +108,14 @@ type track struct {
 type Tracker struct {
 	files      map[string]*track
 	seeded     bool
-	wasRunning bool
+	wasRunning map[string]bool
 	recording  bool
 }
 
 // NewTracker returns a Tracker. uploaded maps a log path to the size that was
 // already uploaded in a previous run.
 func NewTracker(uploaded map[string]int64) *Tracker {
-	t := &Tracker{files: map[string]*track{}}
+	t := &Tracker{files: map[string]*track{}, wasRunning: map[string]bool{}}
 	for p, size := range uploaded {
 		t.files[p] = &track{size: size, uploaded: size, failed: -1}
 	}
@@ -138,12 +138,25 @@ func (t *Tracker) Observe(now time.Time, files []File, wowRunning, manual bool, 
 // means no manual upload; otherwise only files for which it returns true are
 // manually queued.
 func (t *Tracker) ObserveSelected(now time.Time, files []File, wowRunning bool, manual func(File) bool, trig Trigger) (upload []File, recording bool) {
-	// The first poll with WoW not running behaves like an exit: it picks up a
-	// log left over from a session that ended while the helper was not running.
-	exited := !wowRunning && (!t.seeded || t.wasRunning)
-	t.wasRunning = wowRunning
+	return t.ObserveConfigured(now, files, manual, func(File) Trigger { return trig }, func(File) bool { return wowRunning })
+}
 
+// ObserveConfigured applies potentially different triggers and game lifecycle
+// states to each file.
+func (t *Tracker) ObserveConfigured(now time.Time, files []File, manual func(File) bool, triggerFor func(File) Trigger, runningFor func(File) bool) (upload []File, recording bool) {
 	for _, f := range files {
+		trig := Trigger{}
+		if triggerFor != nil {
+			trig = triggerFor(f)
+		}
+		wowRunning := false
+		if runningFor != nil {
+			wowRunning = runningFor(f)
+		}
+		// The first poll with this WoW client not running behaves like an exit:
+		// it picks up a log left over from a session that ended while Sidekick was off.
+		exited := !wowRunning && (!t.seeded || t.wasRunning[f.Path])
+		t.wasRunning[f.Path] = wowRunning
 		tr := t.files[f.Path]
 		switch {
 		case tr == nil:

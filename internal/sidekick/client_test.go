@@ -16,13 +16,36 @@ func TestHashConfig(t *testing.T) {
 	t.Parallel()
 	canonical, err := sidekick.CanonicalConfigJSON(sidekick.DefaultConfig())
 	require.NoError(t, err)
-	require.JSONEq(t, `{"version":1,"auto_upload":{"enabled":false}}`, string(canonical))
-	require.Equal(t, `{"version":1,"auto_upload":{"enabled":false}}`, string(canonical))
+	require.JSONEq(t, `{"version":1,"wow_directories":{}}`, string(canonical))
+	require.Equal(t, `{"version":1,"wow_directories":{}}`, string(canonical))
 	require.NotContains(t, string(canonical), "start_at_login")
 
 	hash, err := sidekick.HashConfig(sidekick.DefaultConfig())
 	require.NoError(t, err)
-	require.Equal(t, "b568659ffa9fe99b312ce1c6ad2724d8b46924833e0641423329c91d9f698be5", hash)
+	require.Equal(t, "6cf556c64ba0052d92ec879851a5ff6c5e60756e88f2da5f2eca540cda76497f", hash)
+}
+
+func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
+	t.Parallel()
+	valid := sidekick.SidekickConfig{
+		Version: sidekick.CurrentConfigVersion,
+		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+		},
+	}
+	require.NoError(t, valid.Validate())
+
+	unknownFormat := valid
+	unknownFormat.WoWDirectories = map[string]sidekick.WoWDirectoryConfig{
+		"dir": {GameFormat: "future", AutoUpload: sidekick.AutoUploadOnGameExit},
+	}
+	require.ErrorContains(t, unknownFormat.Validate(), "unsupported game format")
+
+	unknownMode := valid
+	unknownMode.WoWDirectories = map[string]sidekick.WoWDirectoryConfig{
+		"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: "future"},
+	}
+	require.ErrorContains(t, unknownMode.Validate(), "unsupported auto-upload mode")
 }
 
 func TestStatusAlwaysSerializesLocalSettings(t *testing.T) {
@@ -31,10 +54,12 @@ func TestStatusAlwaysSerializesLocalSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{
 		"start_at_login": false,
-		"archive_after_upload": false,
+		"auto_upload_capabilities": null,
 		"wow_directories": null,
 		"issues": null
 	}`, string(body))
+	require.NotContains(t, string(body), "archive_after_upload")
+	require.NotContains(t, string(body), `"version"`)
 }
 
 func TestUpdate(t *testing.T) {
@@ -53,18 +78,21 @@ func TestUpdate(t *testing.T) {
 			Installation: json.RawMessage(`{"id":"installation-1"}`),
 			ConfigHash:   "hash-2",
 			Config: &sidekick.SidekickConfig{
-				Version:    sidekick.CurrentConfigVersion,
-				AutoUpload: sidekick.AutoUploadConfig{Enabled: true},
+				Version: sidekick.CurrentConfigVersion,
+				WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+					"wowdir_1": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+				},
 			},
 		})
 	}))
 	t.Cleanup(server.Close)
 
 	status := sidekick.Status{
-		Platform: "windows/amd64", Version: "1.2.3", ConfigHash: "hash-1",
-		StartAtLogin: true, ArchiveAfterUpload: true,
+		Platform: "windows/amd64", SidekickVersion: "1.2.3", ConfigHash: "hash-1",
+		StartAtLogin:           true,
+		AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: []sidekick.WoWDirectory{{
-			Path: `C:\\Games\\WoW`, TenantName: "Warmane",
+			ID: "wowdir_1", Path: `C:\\Games\\WoW`, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
 		}},
 		Issues: []sidekick.Issue{},
@@ -74,7 +102,7 @@ func TestUpdate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hash-2", response.ConfigHash)
 	require.NotNil(t, response.Config)
-	require.True(t, response.Config.AutoUpload.Enabled)
+	require.Equal(t, sidekick.AutoUploadOnGameExit, response.Config.WoWDirectories["wowdir_1"].AutoUpload)
 	request := <-requests
 	require.NoError(t, request.err)
 	require.Equal(t, http.MethodPut, request.method)
