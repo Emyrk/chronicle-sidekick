@@ -116,7 +116,7 @@ type Client struct {
 	UploadID      string
 	ChunkSequence int
 	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included with
-	// initial uploads and appends.
+	// both initial and append requests.
 	SidekickStoragePath string
 	// Token returns the current bearer token ("" when signed out).
 	Token string

@@ -115,6 +115,32 @@ func TestUpload(t *testing.T) {
 		require.Equal(t, "text/plain", contentType)
 	})
 
+	t.Run("append includes sidekick storage", func(t *testing.T) {
+		t.Parallel()
+		storagePath := filepath.Join(t.TempDir(), "Chronicle.lua")
+		require.NoError(t, os.WriteFile(storagePath, []byte("ChronicleDB = {append=true}"), 0o644))
+		var content string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "/api/v1/raidlogs/logs/group-id/append", r.URL.Path)
+			require.NoError(t, r.ParseMultipartForm(1<<20))
+			f, _, err := r.FormFile("sidekick_storage")
+			require.NoError(t, err)
+			b, err := io.ReadAll(f)
+			require.NoError(t, err)
+			content = string(b)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"log_id":"group-id"}`))
+		}))
+		t.Cleanup(srv.Close)
+		c := &upload.Client{
+			BaseURL: srv.URL, Token: "tok", SidekickStoragePath: storagePath,
+			AppendLogID: "group-id", UploadID: "550e8400-e29b-41d4-a716-446655440000", ChunkSequence: 1,
+		}
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.NoError(t, err)
+		require.Equal(t, "ChronicleDB = {append=true}", content)
+	})
+
 	t.Run("tenant defaults need no parse query", func(t *testing.T) {
 		t.Parallel()
 		c, req, _ := respond(201, `{"log_id":"abc"}`)

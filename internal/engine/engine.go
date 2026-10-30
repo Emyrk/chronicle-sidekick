@@ -6,16 +6,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
 	"github.com/Emyrk/chronicle-sidekick/internal/watch"
@@ -63,10 +66,9 @@ type Config struct {
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
-	// Upload sends size bytes of path to baseURL under sourceID. fast asks for
-	// the cheapest compression; it is set while WoW is running so the game
-	// never competes for CPU.
-	Upload func(ctx context.Context, token, baseURL, path, sourceID string, size int64, fast bool) (upload.Result, error)
+	// Upload sends one immutable archived snapshot. Fast asks for the cheapest
+	// compression; it is set while WoW is running so the game never competes for CPU.
+	Upload func(ctx context.Context, token string, req UploadRequest) (upload.Result, error)
 	// Lookup asks the selected tenant what it has of sourceID before a body is sent.
 	// It is only called for a log the ledger has never seen (fresh install,
 	// wiped state file, second machine). nil disables the pre-flight check: an
@@ -95,6 +97,19 @@ type Config struct {
 	ServerRetryFor time.Duration // default 1h
 }
 
+// UploadRequest describes an immutable archive snapshot and its Chronicle target.
+type UploadRequest struct {
+	BaseURL             string
+	Path                string
+	SourceID            string
+	Size                int64
+	Fast                bool
+	SidekickStoragePath string
+	AppendLogID         string
+	UploadID            string
+	ChunkSequence       int
+}
+
 // Engine is the uploader's brain. Create with New and call Run.
 type Engine struct {
 	cfg     Config
@@ -119,15 +134,16 @@ type Engine struct {
 
 	// mu guards everything the poll loop and the upload worker share: tracker,
 	// status and the fields the worker reads (token, wowUp, now, ...).
-	mu       sync.Mutex
-	pending  []job
-	archiveQ []watch.File // fully uploaded logs for the worker to rename
-	// archiveFailed holds the size at which renaming a live log failed. Such a
-	// log is not queued again until its size changes. Guarded by mu.
-	archiveFailed map[string]int64
-	current       *job
-	kick          chan struct{} // wakes the worker when pending grows
-	workerOnce    sync.Once
+	mu             sync.Mutex
+	pending        []job
+	blocked        []job // immutable snapshots waiting for a refreshed token
+	current        *job
+	kick           chan struct{} // wakes the worker when pending grows
+	workerOnce     sync.Once
+	installRunning map[string]bool
+	installSeen    map[string]bool
+	installStarted map[string]time.Time
+	installExited  map[string]time.Time
 }
 
 type uploadRequest struct {
@@ -137,12 +153,24 @@ type uploadRequest struct {
 
 // job is one log waiting to be (or being) uploaded.
 type job struct {
-	path    string
-	size    int64
-	baseURL string
+	path         string
+	size         int64
+	baseURL      string
+	install      wowdir.Install
+	running      bool
+	startedAt    time.Time
+	exitedAt     time.Time
+	queuedAt     time.Time
+	snapshotPath string
+	storagePath  string
+	groupID      string
+	appendLogID  string
+	uploadID     string
+	sequence     int
 }
 
 const exitFinalizeAfter = 30 * time.Second
+const appendRestartWindow = 15 * time.Minute
 
 const uploadedStickiness = time.Minute
 
@@ -168,12 +196,16 @@ func New(cfg Config) *Engine {
 	}
 	st := pruneUploaded(cfg.Store, cfg.Logger)
 	return &Engine{
-		cfg:     cfg,
-		tracker: watch.NewTracker(st.Uploaded),
-		manual:  make(chan uploadRequest, 1),
-		wake:    make(chan struct{}, 1),
-		kick:    make(chan struct{}, 1),
-		status:  Status{ReportURL: st.LastReportURL},
+		cfg:            cfg,
+		tracker:        watch.NewTracker(st.Uploaded),
+		manual:         make(chan uploadRequest, 1),
+		wake:           make(chan struct{}, 1),
+		kick:           make(chan struct{}, 1),
+		status:         Status{ReportURL: st.LastReportURL},
+		installRunning: map[string]bool{},
+		installSeen:    map[string]bool{},
+		installStarted: map[string]time.Time{},
+		installExited:  map[string]time.Time{},
 		wait: func(ctx context.Context, d time.Duration) {
 			t := time.NewTimer(d)
 			defer t.Stop()
@@ -235,6 +267,16 @@ func (e *Engine) requestUpload(dirs []string) {
 // UploadNow.
 func (e *Engine) TokenChanged() {
 	e.dirty.Store(true)
+	e.mu.Lock()
+	if len(e.blocked) > 0 {
+		e.pending = append(e.pending, e.blocked...)
+		e.blocked = nil
+		select {
+		case e.kick <- struct{}{}:
+		default:
+		}
+	}
+	e.mu.Unlock()
 	select {
 	case e.wake <- struct{}{}:
 	default:
@@ -270,6 +312,7 @@ func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 
 func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *uploadRequest) {
 	e.workerOnce.Do(func() { go e.worker(ctx) })
+	e.cleanupArchives(now)
 	installs := e.cfg.Installs()
 	var patterns, installDirs []string
 	for i := range installs {
@@ -285,14 +328,12 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	}
 
 	files := watch.Files(patterns)
-	destinations := make(map[string]string, len(files))
 	triggers := make(map[string]watch.Trigger, len(files))
-	installByFile := make(map[string]string, len(files))
+	installByFile := make(map[string]wowdir.Install, len(files))
 	for _, f := range files {
 		for _, in := range installs {
 			if pathWithin(f.Path, in.Dir) {
-				destinations[f.Path] = in.BaseURL
-				installByFile[f.Path] = in.Dir
+				installByFile[f.Path] = in
 				trigger := watch.Trigger{IdleAfter: e.cfg.IdleAfter}
 				if e.cfg.AutoUpload != nil {
 					trigger = e.cfg.AutoUpload(in)
@@ -320,7 +361,6 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 			runningByDir[install.Dir] = running
 		}
 	}
-	st := e.cfg.Store.Get()
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {
@@ -352,15 +392,13 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	e.mu.Lock()
 	e.now = now
 	e.trackSession(now, running)
+	e.trackInstalls(now, installs, runningByDir)
 	queue, recording := e.tracker.ObserveConfigured(now, files, selectFile, func(f watch.File) watch.Trigger {
 		return triggers[f.Path]
 	}, func(f watch.File) bool {
-		return runningByDir[installByFile[f.Path]]
+		return runningByDir[installByFile[f.Path].Dir]
 	})
 	logging := running && e.tracker.CreatedSince(e.sessionStart)
-	if !st.KeepLog {
-		e.queueArchive(files, running)
-	}
 	e.mu.Unlock()
 
 	if manual != nil && len(queue) == 0 {
@@ -376,7 +414,7 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	token := e.currentToken(now)
 	needAuth := token == "" || token == e.rejectedToken
 	if !needAuth {
-		e.enqueue(queue, destinations)
+		e.enqueue(queue, installByFile)
 	}
 	if e.busy() {
 		return // the worker owns the status until it is done
@@ -416,6 +454,31 @@ func (e *Engine) trackSession(now time.Time, running bool) {
 		e.cfg.Logger.Info("wow exited", "session", e.lastSession.Round(time.Minute))
 	}
 	e.wowUp = running
+}
+
+func (e *Engine) trackInstalls(now time.Time, installs []wowdir.Install, running map[string]bool) {
+	for _, install := range installs {
+		dir := install.Dir
+		up := running[dir]
+		if !e.installSeen[dir] {
+			e.installSeen[dir] = true
+			e.installRunning[dir] = up
+			if up {
+				e.installStarted[dir] = now
+			} else {
+				e.installExited[dir] = now
+			}
+			continue
+		}
+		was := e.installRunning[dir]
+		switch {
+		case up && !was:
+			e.installStarted[dir] = now
+		case !up && was:
+			e.installExited[dir] = now
+		}
+		e.installRunning[dir] = up
+	}
 }
 
 // sessionLength is the current session if WoW is running, else the last one.
@@ -494,14 +557,19 @@ func (e *Engine) baseline(now time.Time, haveInstall, running, recording, finali
 // enqueue hands queue to the worker. Observe keeps returning a file until the
 // worker marks it, so a file that is already queued (or in flight at the same
 // size) is skipped. Callers hold e.mu.
-func (e *Engine) enqueue(queue []watch.File, destinations map[string]string) {
+func (e *Engine) enqueue(queue []watch.File, installs map[string]wowdir.Install) {
 	for _, f := range queue {
-		baseURL := destinations[f.Path]
+		install := installs[f.Path]
+		j := job{
+			path: f.Path, size: f.Size, baseURL: install.BaseURL, install: install,
+			running: e.installRunning[install.Dir], startedAt: e.installStarted[install.Dir],
+			exitedAt: e.installExited[install.Dir], queuedAt: e.now,
+		}
 		switch {
 		case e.current != nil && e.current.path == f.Path && e.current.size == f.Size:
-		case e.replacePending(f, baseURL):
+		case e.replacePending(j):
 		default:
-			e.pending = append(e.pending, job{path: f.Path, size: f.Size, baseURL: baseURL})
+			e.pending = append(e.pending, j)
 		}
 	}
 	if len(e.pending) > 0 {
@@ -512,67 +580,14 @@ func (e *Engine) enqueue(queue []watch.File, destinations map[string]string) {
 	}
 }
 
-// queueArchive asks the worker to rename logs that are fully uploaded, once
-// this poll found WoW not running. step never renames anything itself. Callers
-// hold e.mu.
-func (e *Engine) queueArchive(files []watch.File, running bool) {
-	for _, f := range e.tracker.Archivable(files, running) {
-		if size, ok := e.archiveFailed[f.Path]; ok && size == f.Size {
-			e.cfg.Logger.Debug("not archiving log, rename failed at this size", "file", f.Path)
-			continue
-		}
-		if !slices.Contains(e.archiveQ, f) {
-			e.archiveQ = append(e.archiveQ, f)
-		}
-	}
-	if len(e.archiveQ) > 0 {
-		select {
-		case e.kick <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// archive renames the queued logs. The worker calls it only when no upload is
-// pending, holding e.mu so a poll cannot interleave. A log is skipped unless
-// the latest poll still says WoW is not running and the tracker still has all
-// of its bytes uploaded; the poll loop queues it again later if so.
-func (e *Engine) archive() {
-	q := e.archiveQ
-	e.archiveQ = nil
-	for _, f := range q {
-		if len(e.tracker.Archivable([]watch.File{f}, e.wowUp)) == 0 {
-			continue
-		}
-		to, err := watch.Archive(f, e.now)
-		if err != nil {
-			// Retrying every poll would not help (read-only directory, file held
-			// open); wait for the log to change.
-			if e.archiveFailed == nil {
-				e.archiveFailed = map[string]int64{}
-			}
-			e.archiveFailed[f.Path] = f.Size
-			e.cfg.Logger.Warn("archiving log", "file", f.Path, "err", err)
-			continue
-		}
-		delete(e.archiveFailed, f.Path)
-		e.tracker.MarkArchived(f.Path, to)
-		err = e.cfg.Store.Update(func(s *store.State) {
-			delete(s.Uploaded, f.Path) // the archive is not watched, so not tracked
-		})
-		if err != nil {
-			e.cfg.Logger.Warn("saving state", "err", err)
-		}
-		e.cfg.Logger.Info("archived log", "from", f.Path, "to", to)
-	}
-}
-
-// replacePending refreshes the size of an already queued path. Callers hold e.mu.
-func (e *Engine) replacePending(f watch.File, baseURL string) bool {
+// replacePending refreshes an already queued path before its snapshot exists.
+// Once a snapshot has been prepared, its immutable size and append identity stay fixed.
+func (e *Engine) replacePending(j job) bool {
 	for i := range e.pending {
-		if e.pending[i].path == f.Path {
-			e.pending[i].size = f.Size
-			e.pending[i].baseURL = baseURL
+		if e.pending[i].path == j.path {
+			if e.pending[i].snapshotPath == "" {
+				e.pending[i] = j
+			}
 			return true
 		}
 	}
@@ -587,9 +602,6 @@ func (e *Engine) busy() bool { return e.current != nil || len(e.pending) > 0 }
 func (e *Engine) worker(ctx context.Context) {
 	for {
 		e.mu.Lock()
-		if len(e.pending) == 0 && len(e.archiveQ) > 0 {
-			e.archive()
-		}
 		if len(e.pending) == 0 {
 			e.mu.Unlock()
 			select {
@@ -604,13 +616,12 @@ func (e *Engine) worker(ctx context.Context) {
 		e.current = &j
 		e.mu.Unlock()
 
-		rejected := e.uploadOne(ctx, j)
+		rejected, j := e.uploadOne(ctx, j)
 
 		e.mu.Lock()
 		e.current = nil
 		if rejected {
-			// Still queued in the tracker; the poll loop re-enqueues them once
-			// there is a new token.
+			e.blocked = append(e.blocked, j)
 			e.pending = nil
 		}
 		e.mu.Unlock()
@@ -626,6 +637,165 @@ func (e *Engine) worker(ctx context.Context) {
 	}
 }
 
+func (e *Engine) prepareSnapshot(j *job) error {
+	st := e.cfg.Store.Get()
+	group, appendExisting := selectAppendGroup(st.ArchiveGroups, j.install.Dir, j.startedAt)
+	if !appendExisting {
+		group = store.ArchiveGroup{
+			ID: uuid.NewString(), InstallDirectory: j.install.Dir,
+			InstallID: sidekick.DirectoryID(j.install.Dir), CreatedAt: j.queuedAt,
+			UploadID: uuid.NewString(),
+		}
+	} else {
+		group.ChunkSequence++
+		if group.UploadID == "" {
+			group.UploadID = uuid.NewString()
+		}
+	}
+	if !j.exitedAt.IsZero() {
+		group.LastExitAt = j.exitedAt
+	}
+	group.Pending = true
+	group.DeleteAfter = time.Time{}
+	if err := e.cfg.Store.Update(func(s *store.State) {
+		if s.ArchiveGroups == nil {
+			s.ArchiveGroups = map[string]store.ArchiveGroup{}
+		}
+		s.ArchiveGroups[group.ID] = group
+	}); err != nil {
+		return fmt.Errorf("persist archive group: %w", err)
+	}
+
+	dir := filepath.Join(j.install.Dir, "ChronicleSidekick", group.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create archive directory: %w", err)
+	}
+	combatPath := archiveCombatPath(dir, j.queuedAt)
+	if j.running {
+		if err := copySnapshot(j.path, combatPath, j.size); err != nil {
+			return fmt.Errorf("copy combat log snapshot: %w", err)
+		}
+	} else {
+		info, err := os.Stat(j.path)
+		if err != nil {
+			return fmt.Errorf("stat combat log before move: %w", err)
+		}
+		if info.Size() != j.size {
+			return fmt.Errorf("%s changed before it could be archived", j.path)
+		}
+		if err := os.Rename(j.path, combatPath); err != nil {
+			return fmt.Errorf("move combat log snapshot: %w", err)
+		}
+	}
+
+	storagePath, err := snapshotNewestSidecar(j.install.Dir, dir)
+	if err != nil {
+		return err
+	}
+	files := []string{combatPath}
+	if storagePath != "" {
+		files = append(files, storagePath)
+	}
+	if err := e.cfg.Store.Update(func(s *store.State) {
+		g := s.ArchiveGroups[group.ID]
+		g.Files = append(g.Files, files...)
+		s.ArchiveGroups[group.ID] = g
+	}); err != nil {
+		return fmt.Errorf("persist archive files: %w", err)
+	}
+	j.snapshotPath = combatPath
+	j.storagePath = storagePath
+	j.groupID = group.ID
+	if appendExisting {
+		j.appendLogID = group.LogID
+		j.uploadID = group.UploadID
+		j.sequence = group.ChunkSequence
+	}
+	return nil
+}
+
+func selectAppendGroup(groups map[string]store.ArchiveGroup, installDir string, startedAt time.Time) (store.ArchiveGroup, bool) {
+	var best store.ArchiveGroup
+	for _, group := range groups {
+		if group.InstallDirectory != installDir || group.Pending || group.LogID == "" || group.LastExitAt.IsZero() || startedAt.IsZero() {
+			continue
+		}
+		restartedAfter := startedAt.Sub(group.LastExitAt)
+		if restartedAfter < 0 || restartedAfter > appendRestartWindow {
+			continue
+		}
+		if best.ID == "" || group.LastExitAt.After(best.LastExitAt) {
+			best = group
+		}
+	}
+	return best, best.ID != ""
+}
+
+func archiveCombatPath(dir string, now time.Time) string {
+	stem := now.In(time.Local).Format("Jan_02_06_15_04")
+	path := filepath.Join(dir, stem+"_CombatLog.txt")
+	for suffix := 2; ; suffix++ {
+		if _, err := os.Lstat(path); err != nil {
+			return path
+		}
+		path = filepath.Join(dir, fmt.Sprintf("%s_%d_CombatLog.txt", stem, suffix))
+	}
+}
+
+func copySnapshot(from, to string, size int64) error {
+	src, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = dst.Close()
+		if !ok {
+			_ = os.Remove(to)
+		}
+	}()
+	written, err := io.CopyN(dst, src, size)
+	if err != nil {
+		return err
+	}
+	if written != size {
+		return fmt.Errorf("copied %d of %d bytes", written, size)
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func snapshotNewestSidecar(wowDir, archiveDir string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(wowDir, "WTF", "Account", "*", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua"))
+	if err != nil || len(matches) == 0 {
+		return "", err
+	}
+	newest := matches[0]
+	newestInfo, err := os.Stat(newest)
+	if err != nil {
+		return "", err
+	}
+	for _, path := range matches[1:] {
+		info, statErr := os.Stat(path)
+		if statErr == nil && info.ModTime().After(newestInfo.ModTime()) {
+			newest, newestInfo = path, info
+		}
+	}
+	to := filepath.Join(archiveDir, filepath.Base(newest))
+	if err := copySnapshot(newest, to, newestInfo.Size()); err != nil {
+		return "", fmt.Errorf("copy sidekick storage snapshot: %w", err)
+	}
+	return to, nil
+}
+
 // uploadOne sends one log, retrying as the failure allows. It returns true when
 // the server rejected the token.
 //
@@ -633,25 +803,34 @@ func (e *Engine) worker(ctx context.Context) {
 // fails never starts compressing because the multipart pipe blocks until the
 // request is being written. A 5xx is retried every RetryMax for ServerRetryFor
 // and then marked failed. Any other 4xx fails at once.
-func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
+func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared job) {
 	log := e.cfg.Logger.With("file", j.path, "size", j.size)
 	baseURL, ok := e.currentDestination(j.path)
 	if !ok {
 		err := fmt.Errorf("cannot determine the Chronicle tenant; check this WoW folder's realmlist.wtf")
 		log.Error("refreshing upload destination", "err", err)
 		e.fail(j, err)
-		return false
+		return false, j
 	}
 	j.baseURL = baseURL
+	j.install.BaseURL = baseURL
+	if j.snapshotPath == "" {
+		if err := e.prepareSnapshot(&j); err != nil {
+			log.Error("preparing archive snapshot", "err", err)
+			e.fail(j, err)
+			return false, j
+		}
+	}
+	log = e.cfg.Logger.With("file", j.snapshotPath, "size", j.size, "archive_group", j.groupID)
 
-	src, err := upload.Identify(j.path)
+	src, err := upload.Identify(j.snapshotPath)
 	if err != nil {
 		// Without an id there is no ledger to consult; upload as before.
 		log.Debug("could not identify log", "err", err)
 	}
 	ledgerID := sourceLedgerID(j.baseURL, src)
 	if src != "" && e.alreadyUploaded(ctx, log, j, src, ledgerID) {
-		return false
+		return false, j
 	}
 	delay := e.cfg.RetryBase
 	var serverWaited time.Duration
@@ -662,31 +841,35 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 		if token == "" || token == e.rejectedToken {
 			// Signed out while retrying; the tracker still has it queued.
 			e.mu.Unlock()
-			return false
+			return false, j
 		}
 		e.setStatus(Status{State: StateUploading, Detail: "Uploading your log…", ReportURL: e.status.ReportURL})
 		e.mu.Unlock()
 
-		res, err := e.cfg.Upload(ctx, token, j.baseURL, j.path, src, j.size, fast)
+		res, err := e.cfg.Upload(ctx, token, UploadRequest{
+			BaseURL: j.baseURL, Path: j.snapshotPath, SourceID: src, Size: j.size, Fast: fast,
+			SidekickStoragePath: j.storagePath, AppendLogID: j.appendLogID,
+			UploadID: j.uploadID, ChunkSequence: j.sequence,
+		})
 		var serverErr *upload.Error
 		switch {
 		case err == nil:
 			e.finish(j, ledgerID, res)
-			return false
+			return false, j
 		case ctx.Err() != nil:
-			return false
+			return false, j
 		case errors.Is(err, upload.ErrUnauthorized):
 			log.Warn("token rejected")
 			e.mu.Lock()
 			e.rejectedToken = token
 			e.mu.Unlock()
 			e.cfg.Notify("Chronicle", "Chronicle needs you to sign in again.")
-			return true
+			return true, j
 		case errors.As(err, &serverErr) && upload.Retryable(err):
 			if serverWaited >= e.cfg.ServerRetryFor {
 				log.Error("giving up on server errors", "err", err, "waited", serverWaited)
 				e.fail(j, err)
-				return false
+				return false, j
 			}
 			log.Warn("server error, will retry", "err", err, "in", e.cfg.RetryMax)
 			e.retryStatus(fmt.Sprintf("Chronicle is having trouble. Retrying in %s…", e.cfg.RetryMax.Round(time.Second)))
@@ -700,7 +883,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool) {
 		default:
 			log.Error("upload failed", "err", err)
 			e.fail(j, err)
-			return false
+			return false, j
 		}
 	}
 }
@@ -750,14 +933,15 @@ func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, s
 // again, and the tray keeps pointing at the report that exists.
 func (e *Engine) skip(j job, src string, size int64, reportURL string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.tracker.MarkUploaded(j.path, j.size)
+	now := e.now
 	err := e.cfg.Store.Update(func(s *store.State) {
 		if s.Uploaded == nil {
 			s.Uploaded = map[string]int64{}
 		}
 		s.Uploaded[j.path] = j.size
-		s.RecordLog(src, store.Log{Size: max(size, j.size), ReportURL: reportURL, At: e.now})
+		s.RecordLog(src, store.Log{Size: max(size, j.size), ReportURL: reportURL, At: now})
+		markGroupSuccess(s, j.groupID, "", reportURL, now)
 		if reportURL != "" {
 			s.LastReportURL = reportURL
 		}
@@ -773,6 +957,8 @@ func (e *Engine) skip(j job, src string, size int64, reportURL string) {
 	e.lastUploaded = Status{State: StateUploaded, Detail: "This log is already on Chronicle.", ReportURL: url}
 	e.uploadedUntil = e.now.Add(uploadedStickiness)
 	e.setStatus(e.lastUploaded)
+	e.mu.Unlock()
+	e.cleanupArchives(now)
 }
 
 func (e *Engine) retryStatus(detail string) {
@@ -792,14 +978,16 @@ func (e *Engine) fail(j job, err error) {
 func (e *Engine) finish(f job, src string, res upload.Result) {
 	e.mu.Lock()
 	e.tracker.MarkUploaded(f.path, f.size)
+	now := e.now
 	err := e.cfg.Store.Update(func(s *store.State) {
 		if s.Uploaded == nil {
 			s.Uploaded = map[string]int64{}
 		}
 		s.Uploaded[f.path] = f.size
 		if src != "" {
-			s.RecordLog(src, store.Log{Size: f.size, ReportURL: res.ReportURL, At: e.now})
+			s.RecordLog(src, store.Log{Size: f.size, ReportURL: res.ReportURL, At: now})
 		}
+		markGroupSuccess(s, f.groupID, res.LogID, res.ReportURL, now)
 		if res.ReportURL != "" {
 			s.LastReportURL = res.ReportURL
 		}
@@ -826,7 +1014,70 @@ func (e *Engine) finish(f job, src string, res upload.Result) {
 	e.uploadedUntil = e.now.Add(uploadedStickiness)
 	e.setStatus(e.lastUploaded)
 	e.mu.Unlock()
+	e.cleanupArchives(now)
 	e.cfg.Notify(title, detail)
+}
+
+func markGroupSuccess(s *store.State, groupID, logID, reportURL string, now time.Time) {
+	group, ok := s.ArchiveGroups[groupID]
+	if !ok {
+		return
+	}
+	if logID != "" {
+		group.LogID = logID
+	}
+	if reportURL != "" {
+		group.ReportURL = reportURL
+	}
+	group.Pending = false
+	group.LastSuccessAt = now
+	policy := s.EffectiveConfig().Archive
+	group.DeleteAfter = now
+	if policy.Enabled {
+		group.DeleteAfter = now.Add(time.Duration(policy.RetentionDays) * 24 * time.Hour)
+	}
+	s.ArchiveGroups[groupID] = group
+}
+
+func (e *Engine) cleanupArchives(now time.Time) {
+	st := e.cfg.Store.Get()
+	haveCandidate := false
+	for _, group := range st.ArchiveGroups {
+		if !group.Pending && !group.LastSuccessAt.IsZero() && !group.DeleteAfter.IsZero() && !now.Before(group.DeleteAfter) {
+			haveCandidate = true
+			break
+		}
+	}
+	if !haveCandidate {
+		return
+	}
+	if err := e.cfg.Store.Update(func(s *store.State) {
+		for id, group := range s.ArchiveGroups {
+			if group.Pending || group.LastSuccessAt.IsZero() || group.DeleteAfter.IsZero() || now.Before(group.DeleteAfter) {
+				continue
+			}
+			kept := group.Files[:0]
+			for _, path := range group.Files {
+				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					e.cfg.Logger.Warn("deleting archived file", "file", path, "err", err)
+					kept = append(kept, path)
+				}
+			}
+			group.Files = append([]string(nil), kept...)
+			windowEnd := group.LastSuccessAt.Add(appendRestartWindow)
+			if !group.LastExitAt.IsZero() && group.LastExitAt.Add(appendRestartWindow).After(windowEnd) {
+				windowEnd = group.LastExitAt.Add(appendRestartWindow)
+			}
+			if len(group.Files) == 0 && !now.Before(windowEnd) {
+				delete(s.ArchiveGroups, id)
+				_ = os.Remove(filepath.Join(group.InstallDirectory, "ChronicleSidekick", group.ID))
+			} else {
+				s.ArchiveGroups[id] = group
+			}
+		}
+	}); err != nil {
+		e.cfg.Logger.Warn("saving archive cleanup", "err", err)
+	}
 }
 
 func (e *Engine) setStatus(s Status) {

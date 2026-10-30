@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
 	"github.com/Emyrk/chronicle-sidekick/internal/watch"
@@ -41,6 +42,7 @@ type harness struct {
 	installsFn      func() []wowdir.Install
 	autoUpload      func(wowdir.Install) watch.Trigger
 	uploadPaths     []string
+	uploadRequests  []engine.UploadRequest
 	lookups         int           // pre-flight source lookups made
 	gate            chan struct{} // when set, Upload blocks until it is closed
 	notified        []string
@@ -107,13 +109,14 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			return h.token
 		},
 		Lookup: lookupFn,
-		Upload: func(_ context.Context, _, baseURL, path, sourceID string, _ int64, fast bool) (upload.Result, error) {
+		Upload: func(_ context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			h.mu.Lock()
 			h.uploads++
-			h.uploadPaths = append(h.uploadPaths, path)
-			h.sources = append(h.sources, sourceID)
-			h.destinations = append(h.destinations, baseURL)
-			h.fast = append(h.fast, fast)
+			h.uploadPaths = append(h.uploadPaths, req.Path)
+			h.uploadRequests = append(h.uploadRequests, req)
+			h.sources = append(h.sources, req.SourceID)
+			h.destinations = append(h.destinations, req.BaseURL)
+			h.fast = append(h.fast, req.Fast)
 			gate := h.gate
 			var err error
 			if len(h.results) > 0 {
@@ -151,6 +154,11 @@ func (h *harness) step(t *testing.T, now time.Time, manual bool) {
 	t.Helper()
 	h.e.Step(context.Background(), now, manual)
 	require.Eventually(t, func() bool { return !h.e.Busy() }, 5*time.Second, time.Millisecond)
+}
+
+func pathWithinTest(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func TestEngineRoutesUploadToInstallTenant(t *testing.T) {
@@ -198,7 +206,8 @@ func TestEngineUploadsOnlySelectedInstall(t *testing.T) {
 
 	h.e.StepFor(context.Background(), time.Now(), []string{secondDir})
 	require.Eventually(t, func() bool { return !h.e.Busy() }, 5*time.Second, time.Millisecond)
-	require.Equal(t, []string{secondLog}, h.uploadPaths)
+	require.Len(t, h.uploadPaths, 1)
+	require.True(t, pathWithinTest(h.uploadPaths[0], filepath.Join(secondDir, "ChronicleSidekick")))
 	require.Equal(t, []string{"https://second.example"}, h.destinations)
 }
 
@@ -266,7 +275,14 @@ func TestEngineAutoUploadsConfiguredInstallOnGameExit(t *testing.T) {
 	h.runningInstalls[secondDir] = false
 	h.mu.Unlock()
 	h.step(t, t0.Add(time.Minute), false)
-	require.Equal(t, []string{secondLog}, h.uploadPaths)
+	require.Empty(t, h.uploadPaths)
+	require.Equal(t, engine.StateFinalizing, h.statuses[len(h.statuses)-1].State)
+	h.step(t, t0.Add(time.Minute+29*time.Second), false)
+	require.Empty(t, h.uploadPaths)
+	h.step(t, t0.Add(time.Minute+30*time.Second), false)
+	require.Len(t, h.uploadPaths, 1)
+	require.True(t, pathWithinTest(h.uploadPaths[0], filepath.Join(secondDir, "ChronicleSidekick")))
+	require.NoFileExists(t, secondLog)
 	require.Equal(t, []string{"https://second.example"}, h.destinations)
 }
 
@@ -324,6 +340,25 @@ func TestEngineRejectedToken(t *testing.T) {
 	require.Contains(t, h.statuses[len(h.statuses)-1].Detail, "Needs reconnect")
 	h.step(t, t0.Add(10*time.Second), false)
 	require.Equal(t, 1, h.uploads) // not hammered while the token is unchanged
+}
+
+func TestEngineRejectedTokenRetriesSameSnapshotAfterReconnect(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running = false
+	h.results = []error{upload.ErrUnauthorized, nil}
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	h.step(t, t0, true)
+	require.Len(t, h.uploadRequests, 1)
+	first := h.uploadRequests[0]
+	h.token = "fresh"
+	h.e.TokenChanged()
+	h.step(t, t0.Add(time.Second), false)
+
+	require.Len(t, h.uploadRequests, 2)
+	require.Equal(t, first.Path, h.uploadRequests[1].Path)
+	require.Equal(t, first.UploadID, h.uploadRequests[1].UploadID)
 }
 
 func TestEngineTokenCached(t *testing.T) {
@@ -396,114 +431,192 @@ func TestEngineStepDoesNotWaitForUpload(t *testing.T) {
 	require.Equal(t, "Your 10m session is on Chronicle.", last.Detail)
 }
 
-func TestEngineArchivesAfterExitUpload(t *testing.T) {
+func TestSelectAppendGroupUsesFifteenMinuteRestartWindowPerInstall(t *testing.T) {
+	t.Parallel()
+	exit := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	groups := map[string]store.ArchiveGroup{
+		"first": {ID: "first", InstallDirectory: "/wow/a", LogID: "log-1", LastExitAt: exit},
+		"other": {ID: "other", InstallDirectory: "/wow/b", LogID: "log-2", LastExitAt: exit.Add(time.Minute)},
+	}
+	group, ok := engine.SelectAppendGroup(groups, "/wow/a", exit.Add(15*time.Minute))
+	require.True(t, ok)
+	require.Equal(t, "first", group.ID)
+	_, ok = engine.SelectAppendGroup(groups, "/wow/a", exit.Add(15*time.Minute+time.Nanosecond))
+	require.False(t, ok)
+	group, ok = engine.SelectAppendGroup(groups, "/wow/b", exit.Add(2*time.Minute))
+	require.True(t, ok)
+	require.Equal(t, "other", group.ID)
+}
+
+func TestArchiveCombatPathUsesDeterministicCollisionSuffix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	now := time.Date(2026, time.January, 2, 6, 15, 4, 0, time.Local)
+	first := filepath.Join(dir, "Jan_02_26_06_15_CombatLog.txt")
+	second := filepath.Join(dir, "Jan_02_26_06_15_2_CombatLog.txt")
+	require.NoError(t, os.WriteFile(first, nil, 0o600))
+	require.Equal(t, second, engine.ArchiveCombatPath(dir, now))
+	require.NoError(t, os.WriteFile(second, nil, 0o600))
+	require.Equal(t, filepath.Join(dir, "Jan_02_26_06_15_3_CombatLog.txt"), engine.ArchiveCombatPath(dir, now))
+}
+
+func TestEngineSnapshotsBeforeUploadAndMovesStoppedLog(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	t0 := time.Now()
-	dir := filepath.Dir(h.logPath)
-
-	h.mu.Lock()
 	h.running = false
-	h.mu.Unlock()
+	h.res = upload.Result{LogID: "log-1", ReportURL: "https://x/logs/1"}
+	t0 := time.Date(2026, time.January, 2, 6, 15, 4, 0, time.Local)
+
 	h.step(t, t0, true)
-	require.Equal(t, 1, h.uploads)
-	require.FileExists(t, h.logPath) // archived from the next poll, not inline
 
-	h.mu.Lock()
-	h.running = true // the game came back before that poll
-	h.mu.Unlock()
-	h.step(t, t0.Add(5*time.Second), false)
+	require.Len(t, h.uploadRequests, 1)
+	req := h.uploadRequests[0]
+	require.NoFileExists(t, h.logPath)
+	require.FileExists(t, req.Path)
+	require.Equal(t, "Jan_02_26_06_15_CombatLog.txt", filepath.Base(req.Path))
+	groups := h.st.Get().ArchiveGroups
+	require.Len(t, groups, 1)
+	for _, group := range groups {
+		require.False(t, group.Pending)
+		require.Equal(t, "log-1", group.LogID)
+		require.Equal(t, []string{req.Path}, group.Files)
+		require.Equal(t, t0.Add(7*24*time.Hour), group.DeleteAfter)
+	}
+}
+
+func TestEngineManualUploadCopiesRunningLog(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	t0 := time.Date(2026, time.January, 2, 6, 15, 4, 0, time.Local)
+
+	h.step(t, t0, true)
+
 	require.FileExists(t, h.logPath)
+	require.Len(t, h.uploadPaths, 1)
+	require.FileExists(t, h.uploadPaths[0])
+	require.NotEqual(t, h.logPath, h.uploadPaths[0])
+}
 
+func TestEngineSnapshotsNewestSidecar(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	wowDir := filepath.Dir(filepath.Dir(h.logPath))
+	oldPath := filepath.Join(wowDir, "WTF", "Account", "old", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua")
+	newPath := filepath.Join(wowDir, "WTF", "Account", "new", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua")
+	require.NoError(t, os.MkdirAll(filepath.Dir(oldPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(newPath), 0o755))
+	require.NoError(t, os.WriteFile(oldPath, []byte("old"), 0o644))
+	require.NoError(t, os.WriteFile(newPath, []byte("new"), 0o644))
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(oldPath, t0, t0))
+	require.NoError(t, os.Chtimes(newPath, t0.Add(time.Minute), t0.Add(time.Minute)))
+
+	h.step(t, t0.Add(time.Hour), true)
+
+	require.Len(t, h.uploadRequests, 1)
+	storage := h.uploadRequests[0].SidekickStoragePath
+	require.FileExists(t, storage)
+	body, err := os.ReadFile(storage)
+	require.NoError(t, err)
+	require.Equal(t, "new", string(body))
+	require.Equal(t, filepath.Dir(h.uploadRequests[0].Path), filepath.Dir(storage))
+}
+
+func TestEngineAppendsAfterRestartWithinWindow(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.autoUpload = func(wowdir.Install) watch.Trigger { return watch.Trigger{OnExit: true} }
+	h.res = upload.Result{LogID: "log-1", ReportURL: "https://x/logs/1"}
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	h.step(t, t0, false)
 	h.mu.Lock()
 	h.running = false
 	h.mu.Unlock()
-	h.step(t, t0.Add(10*time.Second), false)
-	require.NoFileExists(t, h.logPath)
-	archives, err := filepath.Glob(filepath.Join(dir, "WoWCombatLog-uploaded-*.txt"))
-	require.NoError(t, err)
-	require.Len(t, archives, 1)
-	require.NotContains(t, h.st.Get().Uploaded, archives[0]) // archives are not tracked
-	require.NotContains(t, h.st.Get().Uploaded, h.logPath)
+	h.step(t, t0.Add(time.Minute), false)
+	h.step(t, t0.Add(time.Minute+30*time.Second), false)
+	require.Len(t, h.uploadRequests, 1)
+	require.Empty(t, h.uploadRequests[0].AppendLogID)
 
-	// The next session's log is uploaded on request; the archive is not re-sent.
-	require.NoError(t, os.WriteFile(h.logPath, []byte("next"), 0o644))
+	require.NoError(t, os.WriteFile(h.logPath, []byte("next combat"), 0o644))
 	h.mu.Lock()
 	h.running = true
 	h.mu.Unlock()
-	h.step(t, t0.Add(15*time.Second), false)
+	h.step(t, t0.Add(5*time.Minute), false)
 	h.mu.Lock()
 	h.running = false
+	h.results = []error{errors.New("dial tcp: retry"), nil}
 	h.mu.Unlock()
-	h.step(t, t0.Add(20*time.Second), true)
-	require.Equal(t, 2, h.uploads)
+	h.step(t, t0.Add(6*time.Minute), false)
+	h.step(t, t0.Add(6*time.Minute+30*time.Second), false)
+
+	require.Len(t, h.uploadRequests, 3)
+	firstTry, retry := h.uploadRequests[1], h.uploadRequests[2]
+	require.Equal(t, "log-1", firstTry.AppendLogID)
+	require.NotEmpty(t, firstTry.UploadID)
+	require.Equal(t, 1, firstTry.ChunkSequence)
+	require.Equal(t, firstTry.Path, retry.Path)
+	require.Equal(t, firstTry.UploadID, retry.UploadID)
+	require.Equal(t, firstTry.ChunkSequence, retry.ChunkSequence)
+	require.Len(t, h.st.Get().ArchiveGroups, 1)
 }
 
-func TestEngineKeepLog(t *testing.T) {
+func TestEngineArchiveRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "enabled", enabled: true},
+		{name: "disabled", enabled: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.running = false
+			require.NoError(t, h.st.Update(func(s *store.State) {
+				s.Config = sidekick.SidekickConfig{
+					Version:        sidekick.CurrentConfigVersion,
+					Archive:        sidekick.ArchivePolicy{Enabled: tc.enabled, RetentionDays: 7},
+					WoWDirectories: map[string]sidekick.WoWDirectoryConfig{},
+				}
+			}))
+			t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			h.step(t, t0, true)
+			require.Len(t, h.uploadPaths, 1)
+			if tc.enabled {
+				require.FileExists(t, h.uploadPaths[0])
+				h.step(t, t0.Add(7*24*time.Hour-time.Second), false)
+				require.FileExists(t, h.uploadPaths[0])
+				h.step(t, t0.Add(7*24*time.Hour), false)
+				require.NoFileExists(t, h.uploadPaths[0])
+			} else {
+				require.NoFileExists(t, h.uploadPaths[0])
+				require.Len(t, h.st.Get().ArchiveGroups, 1, "metadata survives the append window")
+				h.step(t, t0.Add(15*time.Minute-time.Second), false)
+				require.Len(t, h.st.Get().ArchiveGroups, 1)
+				h.step(t, t0.Add(15*time.Minute), false)
+				require.Empty(t, h.st.Get().ArchiveGroups)
+			}
+		})
+	}
+}
+
+func TestEngineFailedUploadPreservesPendingArchive(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.running = false
-	require.NoError(t, h.st.Update(func(s *store.State) { s.KeepLog = true }))
-	t0 := time.Now()
+	h.results = []error{&upload.Error{Status: 400, Message: "bad log"}}
 
-	h.step(t, t0, true)
-	h.step(t, t0.Add(5*time.Second), false)
-	require.Equal(t, 1, h.uploads)
-	require.FileExists(t, h.logPath)
-}
+	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
 
-// warnCounter counts records at Warn and above.
-type warnCounter struct {
-	slog.Handler
-	warns *atomic.Int32
-}
-
-func (w warnCounter) Enabled(context.Context, slog.Level) bool { return true }
-func (w warnCounter) Handle(_ context.Context, r slog.Record) error {
-	if r.Level >= slog.LevelWarn {
-		w.warns.Add(1)
+	require.Len(t, h.uploadPaths, 1)
+	require.FileExists(t, h.uploadPaths[0])
+	groups := h.st.Get().ArchiveGroups
+	require.Len(t, groups, 1)
+	for _, group := range groups {
+		require.True(t, group.Pending)
+		require.Zero(t, group.DeleteAfter)
 	}
-	return nil
-}
-func (w warnCounter) WithAttrs([]slog.Attr) slog.Handler { return w }
-func (w warnCounter) WithGroup(string) slog.Handler      { return w }
-
-func TestEngineArchiveFailureNotRetried(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("cannot make a directory read-only for this user")
-	}
-	var warns atomic.Int32
-	h := newHarnessLogger(t, nil, slog.New(warnCounter{Handler: slog.DiscardHandler, warns: &warns}))
-	t0 := time.Now()
-	dir := filepath.Dir(h.logPath)
-
-	h.mu.Lock()
-	h.running = false
-	h.mu.Unlock()
-	h.step(t, t0, true) // the user uploads before archiving
-	require.Equal(t, 1, h.uploads)
-
-	require.NoError(t, os.Chmod(dir, 0o555))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	for i := 1; i <= 100; i++ {
-		h.step(t, t0.Add(time.Duration(i)*5*time.Second), false)
-	}
-	require.FileExists(t, h.logPath)
-	require.LessOrEqual(t, warns.Load(), int32(1))
-
-	// Writable again, but the log is the same size: it is not tried again.
-	require.NoError(t, os.Chmod(dir, 0o755))
-	h.step(t, t0.Add(time.Hour), false)
-	require.FileExists(t, h.logPath)
-
-	// Once the log changes it is uploaded and archived as usual.
-	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat and more"), 0o644))
-	h.step(t, t0.Add(2*time.Hour), false)               // sees the growth
-	h.step(t, t0.Add(3*time.Hour), true)                // the user uploads it again
-	h.step(t, t0.Add(3*time.Hour+5*time.Second), false) // archives
-	require.Equal(t, 2, h.uploads)
-	require.NoFileExists(t, h.logPath)
 }
 
 func TestEngineWaitsForFirstFightAfterNewLog(t *testing.T) {

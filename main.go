@@ -160,13 +160,17 @@ func run() error {
 		Installs:   a.installs,
 		AutoUpload: a.autoUploadTrigger,
 		Token:      a.cachedToken,
-		Upload: func(ctx context.Context, _ string, baseURL, path, sourceID string, size int64, fast bool) (upload.Result, error) {
+		Upload: func(ctx context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
 			if err != nil {
 				return upload.Result{}, err
 			}
-			c := upload.Client{BaseURL: baseURL, Token: token, Format: string(a.gameFormatForPath(path)), Fast: fast}
-			return c.Upload(ctx, path, sourceID, size)
+			c := upload.Client{
+				BaseURL: req.BaseURL, Token: token, Format: string(a.gameFormatForPath(req.Path)), Fast: req.Fast,
+				SidekickStoragePath: req.SidekickStoragePath, AppendLogID: req.AppendLogID,
+				UploadID: req.UploadID, ChunkSequence: req.ChunkSequence,
+			}
+			return c.Upload(ctx, req.Path, req.SourceID, req.Size)
 		},
 		// Lookup is the pre-flight check for a log this machine's ledger has
 		// never seen. A server without the route answers 404, which reads as

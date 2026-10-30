@@ -72,17 +72,21 @@ func (s State) EffectiveConfigHash() string {
 
 // ArchiveGroup is one retained play session and its Chronicle log group.
 type ArchiveGroup struct {
-	ID               string    `json:"id"`
-	InstallDirectory string    `json:"install_directory"`
-	InstallID        string    `json:"install_id"`
-	LogID            string    `json:"log_id,omitempty"`
-	ReportURL        string    `json:"report_url,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	LastExitAt       time.Time `json:"last_exit_at,omitempty"`
-	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
-	DeleteAfter      time.Time `json:"delete_after,omitempty"`
-	Pending          bool      `json:"pending,omitempty"`
-	Files            []string  `json:"files,omitempty"`
+	ID               string `json:"id"`
+	InstallDirectory string `json:"install_directory"`
+	InstallID        string `json:"install_id"`
+	LogID            string `json:"log_id,omitempty"`
+	ReportURL        string `json:"report_url,omitempty"`
+	// UploadID and ChunkSequence identify append chunks. They are persisted
+	// before an append starts so retrying the same snapshot is idempotent.
+	UploadID      string    `json:"upload_id,omitempty"`
+	ChunkSequence int       `json:"chunk_sequence,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastExitAt    time.Time `json:"last_exit_at,omitempty"`
+	LastSuccessAt time.Time `json:"last_success_at,omitempty"`
+	DeleteAfter   time.Time `json:"delete_after,omitempty"`
+	Pending       bool      `json:"pending,omitempty"`
+	Files         []string  `json:"files,omitempty"`
 }
 
 // Log is one entry of the upload ledger.

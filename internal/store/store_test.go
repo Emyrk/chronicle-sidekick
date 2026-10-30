@@ -44,6 +44,8 @@ func TestArchiveGroupsRoundTripAndCopy(t *testing.T) {
 		InstallID:        "wowdir_1",
 		LogID:            "log-1",
 		ReportURL:        "https://x/logs/1",
+		UploadID:         "550e8400-e29b-41d4-a716-446655440000",
+		ChunkSequence:    2,
 		CreatedAt:        now,
 		LastExitAt:       now.Add(time.Minute),
 		LastSuccessAt:    now.Add(2 * time.Minute),

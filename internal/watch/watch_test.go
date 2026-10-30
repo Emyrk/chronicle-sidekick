@@ -27,8 +27,8 @@ func TestTracker(t *testing.T) {
 	const idle = 5 * time.Minute
 	t0 := time.Date(2026, 1, 1, 20, 0, 0, 0, time.UTC)
 	log := func(size int64) []watch.File { return []watch.File{{Path: "log", Size: size}} }
-	exitOnly := watch.Trigger{OnExit: true, IdleAfter: idle}
-	withIdle := watch.Trigger{OnExit: true, OnIdle: true, IdleAfter: idle}
+	exitOnly := watch.Trigger{OnExit: true, FinalizeAfter: 30 * time.Second, IdleAfter: idle}
+	withIdle := watch.Trigger{OnExit: true, FinalizeAfter: 30 * time.Second, OnIdle: true, IdleAfter: idle}
 
 	t.Run("exit only uploads once WoW is gone", func(t *testing.T) {
 		t.Parallel()
@@ -46,31 +46,32 @@ func TestTracker(t *testing.T) {
 		require.Empty(t, up)
 
 		up, _ = tr.Observe(t0.Add(time.Hour+5*time.Second), log(200), false, false, exitOnly)
+		require.Empty(t, up)
+		require.True(t, tr.Finalizing())
+		up, _ = tr.Observe(t0.Add(time.Hour+35*time.Second), log(200), false, false, exitOnly)
 		require.Equal(t, log(200), up)
 
 		tr.MarkUploaded("log", 200)
-		up, _ = tr.Observe(t0.Add(time.Hour+10*time.Second), log(200), false, false, exitOnly)
+		up, _ = tr.Observe(t0.Add(time.Hour+40*time.Second), log(200), false, false, exitOnly)
 		require.Empty(t, up)
 	})
 
-	t.Run("exit waits for finalization and resets after a write", func(t *testing.T) {
+	t.Run("write while stopped restarts finalization", func(t *testing.T) {
 		t.Parallel()
 		tr := watch.NewTracker(nil)
-		trigger := watch.Trigger{OnExit: true, FinalizeAfter: 30 * time.Second, IdleAfter: idle}
-		tr.Observe(t0, log(100), true, false, trigger)
-
-		up, _ := tr.Observe(t0.Add(time.Minute), log(100), false, false, trigger)
+		tr.Observe(t0, log(100), true, false, exitOnly)
+		up, _ := tr.Observe(t0.Add(time.Minute), log(100), false, false, exitOnly)
 		require.Empty(t, up)
 		require.True(t, tr.Finalizing())
-		up, _ = tr.Observe(t0.Add(time.Minute+29*time.Second), log(100), false, false, trigger)
+		up, _ = tr.Observe(t0.Add(time.Minute+29*time.Second), log(100), false, false, exitOnly)
 		require.Empty(t, up)
-
-		// A late flush restarts the settling period.
-		up, _ = tr.Observe(t0.Add(time.Minute+30*time.Second), log(120), false, false, trigger)
+		up, _ = tr.Observe(t0.Add(time.Minute+30*time.Second), log(110), false, false, exitOnly)
 		require.Empty(t, up)
 		require.True(t, tr.Finalizing())
-		up, _ = tr.Observe(t0.Add(2*time.Minute), log(120), false, false, trigger)
-		require.Equal(t, log(120), up)
+		up, _ = tr.Observe(t0.Add(time.Minute+59*time.Second), log(110), false, false, exitOnly)
+		require.Empty(t, up)
+		up, _ = tr.Observe(t0.Add(2*time.Minute), log(110), false, false, exitOnly)
+		require.Equal(t, log(110), up)
 		require.False(t, tr.Finalizing())
 	})
 
@@ -91,6 +92,8 @@ func TestTracker(t *testing.T) {
 		t.Parallel()
 		tr := watch.NewTracker(nil)
 		up, _ := tr.Observe(t0, log(100), false, false, exitOnly)
+		require.Empty(t, up)
+		up, _ = tr.Observe(t0.Add(30*time.Second), log(100), false, false, exitOnly)
 		require.Equal(t, log(100), up)
 	})
 
@@ -109,7 +112,8 @@ func TestTracker(t *testing.T) {
 	t.Run("queued file survives until marked", func(t *testing.T) {
 		t.Parallel()
 		tr := watch.NewTracker(nil)
-		up, _ := tr.Observe(t0, log(100), false, false, exitOnly)
+		tr.Observe(t0, log(100), false, false, exitOnly)
+		up, _ := tr.Observe(t0.Add(30*time.Second), log(100), false, false, exitOnly)
 		require.Len(t, up, 1)
 		up, _ = tr.Observe(t0.Add(time.Minute), log(100), false, false, exitOnly)
 		require.Len(t, up, 1) // e.g. signed out: still waiting
@@ -119,6 +123,7 @@ func TestTracker(t *testing.T) {
 		t.Parallel()
 		tr := watch.NewTracker(nil)
 		tr.Observe(t0, log(100), false, false, exitOnly)
+		tr.Observe(t0.Add(30*time.Second), log(100), false, false, exitOnly)
 		tr.MarkFailed("log", 100)
 		up, _ := tr.Observe(t0.Add(time.Minute), log(100), false, false, exitOnly)
 		require.Empty(t, up)
