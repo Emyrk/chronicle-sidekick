@@ -49,6 +49,7 @@ type harness struct {
 	lookups                int           // pre-flight source lookups made
 	gate                   chan struct{} // when set, Upload blocks until it is closed
 	notified               []string
+	notificationMessages   []string
 	statuses               []engine.Status
 }
 
@@ -155,7 +156,10 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			}
 			return h.running
 		},
-		Notify:    func(title, _ string) { h.notified = append(h.notified, title) },
+		Notify: func(title, message string) {
+			h.notified = append(h.notified, title)
+			h.notificationMessages = append(h.notificationMessages, message)
+		},
 		OnStatus:  func(s engine.Status) { h.statuses = append(h.statuses, s) },
 		RetryBase: time.Millisecond,
 		RetryMax:  time.Millisecond,
@@ -394,6 +398,26 @@ func TestEngineTokenCached(t *testing.T) {
 	h.e.TokenChanged()
 	h.step(t, t0.Add(time.Hour), false)
 	require.Equal(t, 2, reads)
+}
+
+func TestEngineQuotaFailureShowsFriendlyNotificationWithError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.running = false
+	quotaErr := &upload.Error{
+		Status:  400,
+		Message: "storage limit exceeded",
+		Detail:  "This append would exceed the storage limit of 10 GB; delete log files to free up space",
+	}
+	h.results = []error{quotaErr}
+
+	h.step(t, time.Now(), true)
+
+	require.Equal(t, 1, h.uploads, "quota failures are not retried")
+	require.Equal(t, []string{"Chronicle upload failed"}, h.notified)
+	require.Len(t, h.notificationMessages, 1)
+	require.Contains(t, h.notificationMessages[0], "Your Chronicle storage is full")
+	require.Contains(t, h.notificationMessages[0], quotaErr.Error())
 }
 
 func TestEngineGivesUpOnServerErrors(t *testing.T) {
