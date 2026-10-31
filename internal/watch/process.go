@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/process"
-
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
 
@@ -188,11 +186,3 @@ func underAny(path string, dirs []string) bool {
 
 // systemProcs is the real process table. The type, List and Exists are per-OS
 // (process_*.go).
-
-func (*systemProcs) Exe(ctx context.Context, pid int32) (string, error) {
-	p, err := process.NewProcessWithContext(ctx, pid)
-	if err != nil {
-		return "", err
-	}
-	return p.ExeWithContext(ctx)
-}

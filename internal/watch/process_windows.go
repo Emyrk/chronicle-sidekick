@@ -23,6 +23,12 @@ func (s *systemProcs) Exists(_ context.Context, pid int32, name string) (bool, e
 	if s.h == 0 || s.pid != pid {
 		s.close()
 		h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+		// Some legacy clients deny limited-query access but allow the older
+		// query-information right. Keep SYNCHRONIZE so exit detection still
+		// uses the process handle rather than a potentially recycled pid.
+		if err == windows.ERROR_ACCESS_DENIED {
+			h, err = windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+		}
 		if err != nil {
 			return false, err
 		}
@@ -55,6 +61,25 @@ func (s *systemProcs) close() {
 		_ = windows.CloseHandle(s.h)
 		s.h, s.pid = 0, 0
 	}
+}
+
+// Exe queries only the image path, without the VM-read permission requested by
+// gopsutil. Legacy clients can deny VM reads while allowing image queries.
+func (*systemProcs) Exe(_ context.Context, pid int32) (string, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err == windows.ERROR_ACCESS_DENIED {
+		h, err = windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+	}
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	var buf [windows.MAX_LONG_PATH]uint16
+	n := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buf[:n]), nil
 }
 
 // List takes one Toolhelp32 snapshot, which carries every process's name.
