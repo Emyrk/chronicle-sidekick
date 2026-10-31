@@ -17,6 +17,7 @@ Sidekick runs on macOS, Windows, and Linux. Add one or more WoW folders, then se
 | --- | --- | --- |
 | WoW Forever | `Logs/WoWCombatLog.txt` and unique logs | Configured Blizzard client |
 | Vanilla 1.12a | `CustomData/Chronicle_<character>.txt` | OctoWoW, CapyCraft, VanillaPlus, Kronos |
+| Classic 1.14.2 through HermesProxy | `Logs/WoWCombatLog.txt` | Configured proxy server |
 | TBC 2.4.3 | `Logs/WoWCombatLog.txt` | Moonwell, Crusader Storm |
 | Wrath 3.3.5a | `Logs/WoWCombatLog.txt` | ChromieCraft, Warmane |
 

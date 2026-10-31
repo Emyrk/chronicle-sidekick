@@ -35,6 +35,35 @@ func TestDetect(t *testing.T) {
 	require.Equal(t, filepath.Join(root, "_classic_beta_", "Logs"), got[0].LogDir)
 }
 
+func TestDetectsClassic1142FromBuildInfo(t *testing.T) {
+	t.Parallel()
+	root := fakeInstall(t, "_classic_era_")
+	buildInfo := `Branch!STRING:0|Active!DEC:1|Version!STRING:0|Product!STRING:0
+main|1|2.4.3.8606|wow_classic
+main|1|1.14.2.42597|wow_classic_era
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".build.info"), []byte(buildInfo), 0o644))
+	hermesConfig := filepath.Join(filepath.Dir(root), "Hermes", "HermesProxy.config")
+	require.NoError(t, os.MkdirAll(filepath.Dir(hermesConfig), 0o755))
+	require.NoError(t, os.WriteFile(hermesConfig, []byte(`<add key="ServerAddress" value="login2.twinstar-wow.com:3724" />`), 0o644))
+
+	got := wowdir.Detect([]string{root}, tenant.DefaultLayout)
+	require.Len(t, got, 1)
+	require.Equal(t, "classic_1.14.2", got[0].DetectedGameFormat)
+	require.Equal(t, "Kronos", got[0].Flavor)
+	require.Equal(t, "login2.twinstar-wow.com", got[0].Realmlist)
+	require.Equal(t, "https://kronos.chronicleclassic.com", got[0].BaseURL)
+}
+
+func TestDoesNotGuessClassicFormatFromFlavorMarker(t *testing.T) {
+	t.Parallel()
+	root := fakeInstall(t, "_classic_era_")
+
+	got := wowdir.Detect([]string{root}, tenant.DefaultLayout)
+	require.Len(t, got, 1)
+	require.Empty(t, got[0].DetectedGameFormat)
+}
+
 func TestResolve(t *testing.T) {
 	t.Parallel()
 	// The flavor folder name must never matter.

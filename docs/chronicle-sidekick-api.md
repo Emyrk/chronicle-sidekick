@@ -84,9 +84,23 @@ Sidekick persists the `log_id` returned by the initial upload. If the same WoW
 installation starts again within 15 minutes of its previous exit, its next
 finalized combat log is appended to that `log_id`.
 
+For the `vanilla_1.12a` game format, Sidekick watches only the per-character
+`CustomData/Chronicle_*.txt` files and uploads each file with Chronicle parser
+format `1.12a-cc-addon` after the game exits. The wildcard suffix beginning at
+the first underscore, such as `_Thrall.txt`, is persisted with the archive
+group. A later session appends only to the recent group with the same suffix,
+so characters in one installation retain independent Chronicle log groups.
+
+For the `classic_1.14.2` game format, Sidekick watches the standard
+`Logs/WoWCombatLog*.txt` files and uploads with Chronicle parser format
+`hermesproxy_1_14_2_cc`. Sidekick detects this format when the active
+`wow_classic_era` row in `.build.info` reports version `1.14.2.42597`. It does
+not guess from the flavor directory name alone.
+
 For the `tbc_2.4.3` game format, Sidekick uploads with Chronicle parser format
-`2.4.3-cc-addon`. TBC uploads contain only the gzip-compressed `combat_log` and
-do not capture or send a Sidekick storage artifact.
+`2.4.3-cc-addon`. TBC and Classic 1.14.2 uploads contain only the
+gzip-compressed `combat_log` and do not capture or send a Sidekick storage
+artifact.
 
 For the `wotlk_3.3.5a` game format, Sidekick uploads with Chronicle parser
 format `3.3.5a-cc-addon` and sends two multipart parts when the SavedVariables

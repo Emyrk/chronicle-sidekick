@@ -43,6 +43,7 @@ type harness struct {
 	installsFn             func() []wowdir.Install
 	autoUpload             func(wowdir.Install) watch.Trigger
 	captureSidekickStorage bool
+	appendGroupKey         func(string) string
 	uploadPaths            []string
 	uploadRequests         []engine.UploadRequest
 	lookups                int           // pre-flight source lookups made
@@ -106,6 +107,12 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			return watch.Trigger{}
 		},
 		CaptureSidekickStorage: func(wowdir.Install) bool { return h.captureSidekickStorage },
+		AppendGroupKey: func(_ wowdir.Install, path string) string {
+			if h.appendGroupKey != nil {
+				return h.appendGroupKey(path)
+			}
+			return ""
+		},
 		Token: func() string {
 			if tokenFn != nil {
 				return tokenFn()
@@ -451,15 +458,17 @@ func TestSelectAppendGroupUsesFifteenMinuteRestartWindowPerInstall(t *testing.T)
 	t.Parallel()
 	exit := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	groups := map[string]store.ArchiveGroup{
-		"first": {ID: "first", InstallDirectory: "/wow/a", LogID: "log-1", LastExitAt: exit},
-		"other": {ID: "other", InstallDirectory: "/wow/b", LogID: "log-2", LastExitAt: exit.Add(time.Minute)},
+		"first": {ID: "first", InstallDirectory: "/wow/a", SourceKey: "_thrall.txt", LogID: "log-1", LastExitAt: exit},
+		"other": {ID: "other", InstallDirectory: "/wow/b", SourceKey: "_jaina.txt", LogID: "log-2", LastExitAt: exit.Add(time.Minute)},
 	}
-	group, ok := engine.SelectAppendGroup(groups, "/wow/a", exit.Add(15*time.Minute))
+	group, ok := engine.SelectAppendGroup(groups, "/wow/a", "_thrall.txt", exit.Add(15*time.Minute))
 	require.True(t, ok)
 	require.Equal(t, "first", group.ID)
-	_, ok = engine.SelectAppendGroup(groups, "/wow/a", exit.Add(15*time.Minute+time.Nanosecond))
+	_, ok = engine.SelectAppendGroup(groups, "/wow/a", "_jaina.txt", exit.Add(2*time.Minute))
 	require.False(t, ok)
-	group, ok = engine.SelectAppendGroup(groups, "/wow/b", exit.Add(2*time.Minute))
+	_, ok = engine.SelectAppendGroup(groups, "/wow/a", "_thrall.txt", exit.Add(15*time.Minute+time.Nanosecond))
+	require.False(t, ok)
+	group, ok = engine.SelectAppendGroup(groups, "/wow/b", "_jaina.txt", exit.Add(2*time.Minute))
 	require.True(t, ok)
 	require.Equal(t, "other", group.ID)
 }
@@ -629,6 +638,44 @@ func TestEngineAppendsAfterRestartWithinWindow(t *testing.T) {
 	require.Equal(t, firstTry.UploadID, retry.UploadID)
 	require.Equal(t, firstTry.ChunkSequence, retry.ChunkSequence)
 	require.Len(t, h.st.Get().ArchiveGroups, 1)
+}
+
+func TestEngineStartsNewGroupForDifferentAppendKey(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	key := "_thrall.txt"
+	h.appendGroupKey = func(string) string { return key }
+	h.autoUpload = func(wowdir.Install) watch.Trigger { return watch.Trigger{OnExit: true} }
+	h.res = upload.Result{LogID: "log-1", ReportURL: "https://x/logs/1"}
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	h.step(t, t0, false)
+	h.mu.Lock()
+	h.running = false
+	h.mu.Unlock()
+	h.step(t, t0.Add(time.Minute), false)
+	h.step(t, t0.Add(time.Minute+30*time.Second), false)
+	require.Len(t, h.uploadRequests, 1)
+	require.Len(t, h.st.Get().ArchiveGroups, 1)
+	for _, group := range h.st.Get().ArchiveGroups {
+		require.Equal(t, "_thrall.txt", group.SourceKey)
+	}
+
+	require.NoError(t, os.WriteFile(h.logPath, []byte("next combat"), 0o644))
+	key = "_jaina.txt"
+	h.mu.Lock()
+	h.running = true
+	h.mu.Unlock()
+	h.step(t, t0.Add(5*time.Minute), false)
+	h.mu.Lock()
+	h.running = false
+	h.mu.Unlock()
+	h.step(t, t0.Add(6*time.Minute), false)
+	h.step(t, t0.Add(6*time.Minute+30*time.Second), false)
+
+	require.Len(t, h.uploadRequests, 2)
+	require.Empty(t, h.uploadRequests[1].AppendLogID)
+	require.Len(t, h.st.Get().ArchiveGroups, 2)
 }
 
 func TestEngineArchiveRetention(t *testing.T) {

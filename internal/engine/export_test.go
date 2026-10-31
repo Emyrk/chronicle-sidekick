@@ -16,8 +16,8 @@ func (e *Engine) StepFor(ctx context.Context, now time.Time, dirs []string) {
 }
 
 // SelectAppendGroup exposes restart grouping to tests.
-func SelectAppendGroup(groups map[string]store.ArchiveGroup, installDir string, startedAt time.Time) (store.ArchiveGroup, bool) {
-	return selectAppendGroup(groups, installDir, startedAt)
+func SelectAppendGroup(groups map[string]store.ArchiveGroup, installDir, sourceKey string, startedAt time.Time) (store.ArchiveGroup, bool) {
+	return selectAppendGroup(groups, installDir, sourceKey, startedAt)
 }
 
 // ArchiveCombatPath exposes deterministic archive naming to tests.

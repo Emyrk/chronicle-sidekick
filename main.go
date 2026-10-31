@@ -160,6 +160,7 @@ func run() error {
 		Installs:               a.installs,
 		AutoUpload:             a.autoUploadTrigger,
 		CaptureSidekickStorage: a.captureSidekickStorage,
+		AppendGroupKey:         a.appendGroupKey,
 		Token:                  a.cachedToken,
 		Upload: func(ctx context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
@@ -242,6 +243,13 @@ func ensureInstallation(st *store.Store) (installationInfo, error) {
 
 const maxStatusWoWDirectories = 50
 
+func gameFormatForInstall(install wowdir.Install, config sidekick.SidekickConfig) sidekick.GameFormat {
+	if format := config.WoWDirectories[sidekick.DirectoryID(install.Dir)].GameFormat; format != "" {
+		return format
+	}
+	return sidekick.GameFormat(install.DetectedGameFormat)
+}
+
 func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
 	config := a.store.Get().EffectiveConfig()
 	for _, install := range a.installs() {
@@ -249,7 +257,7 @@ func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			continue
 		}
-		return config.WoWDirectories[sidekick.DirectoryID(install.Dir)].GameFormat
+		return gameFormatForInstall(install, config)
 	}
 	return ""
 }
@@ -272,6 +280,18 @@ func (a *app) captureSidekickStorage(install wowdir.Install) bool {
 	return config.GameFormat.IncludesSidekickStorage()
 }
 
+func (a *app) appendGroupKey(install wowdir.Install, path string) string {
+	config := a.store.Get().EffectiveConfig()
+	if gameFormatForInstall(install, config) != sidekick.GameFormatVanilla112a {
+		return ""
+	}
+	name := filepath.Base(path)
+	if underscore := strings.IndexByte(name, '_'); underscore >= 0 {
+		return strings.ToLower(name[underscore:])
+	}
+	return strings.ToLower(name)
+}
+
 func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, issues []sidekick.Issue, platform, appVersion string, startAtLogin bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
@@ -285,7 +305,7 @@ func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, i
 		id := sidekick.DirectoryID(install.Dir)
 		directories = append(directories, sidekick.WoWDirectory{
 			ID: id, Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL,
-			Realmlist: install.Realmlist, GameFormat: config.WoWDirectories[id].GameFormat,
+			Realmlist: install.Realmlist, GameFormat: gameFormatForInstall(install, config),
 		})
 	}
 	return sidekick.Status{
@@ -406,8 +426,15 @@ func (a *app) installs() []wowdir.Install {
 			}
 		}
 	}
-	if a.uploadOverride != "" {
-		for i := range found {
+	config := st.EffectiveConfig()
+	for i := range found {
+		switch gameFormatForInstall(found[i], config) {
+		case sidekick.GameFormatVanilla112a:
+			found[i].LogGlobs = wowdir.ChronicleCustomLogGlobs(found[i].Dir)
+		case sidekick.GameFormatClassic1142, sidekick.GameFormatTBC243, sidekick.GameFormatWrath335a:
+			found[i].LogGlobs = wowdir.WoWCombatLogGlobs(found[i].Dir)
+		}
+		if a.uploadOverride != "" {
 			found[i].BaseURL = a.uploadOverride
 		}
 	}

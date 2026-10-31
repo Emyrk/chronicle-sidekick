@@ -107,6 +107,25 @@ func TestSidekickStatusUsesEmptyRequiredCollections(t *testing.T) {
 	require.Contains(t, string(body), `"issues":[]`)
 }
 
+func TestSidekickStatusReportsDetectedGameFormatUntilConfigured(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join("games", "classic-era")
+	install := wowdir.Install{
+		Flavor: "_classic_era_", Dir: dir, BaseURL: tenant.ForeverBaseURL,
+		DetectedGameFormat: string(sidekick.GameFormatClassic1142),
+	}
+
+	status := sidekickStatus([]wowdir.Install{install}, sidekick.DefaultConfig(), nil, "windows/amd64", "1.2.3", false)
+	require.Equal(t, sidekick.GameFormatClassic1142, status.WoWDirectories[0].GameFormat)
+
+	config := sidekick.DefaultConfig()
+	config.WoWDirectories[sidekick.DirectoryID(dir)] = sidekick.WoWDirectoryConfig{
+		GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadDisabled,
+	}
+	status = sidekickStatus([]wowdir.Install{install}, config, nil, "windows/amd64", "1.2.3", false)
+	require.Equal(t, sidekick.GameFormatTBC243, status.WoWDirectories[0].GameFormat)
+}
+
 func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	t.Parallel()
 	installs := make([]wowdir.Install, maxStatusWoWDirectories+1)
@@ -467,6 +486,35 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.Equal(t, "https://capy.chronicleclassic.com", got[0].BaseURL)
 	require.Equal(t, warmane, got[1].Dir)
 	require.Equal(t, "https://warmane.chronicleclassic.com", got[1].BaseURL)
+}
+
+func TestInstallsSelectsLogsForManagedGameFormat(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	vanilla := fakeLegacyInstall(t, root, "Vanilla", "apac.capycraft.io")
+	tbc := fakeLegacyInstall(t, root, "TBC", "login.moonwell.su")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{vanilla, tbc}
+		s.WoWPathsSet = true
+		s.Config = sidekick.SidekickConfig{
+			Version: sidekick.CurrentConfigVersion,
+			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
+			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+				sidekick.DirectoryID(vanilla): {GameFormat: sidekick.GameFormatVanilla112a, AutoUpload: sidekick.AutoUploadOnGameExit},
+				sidekick.DirectoryID(tbc):     {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
+			},
+		}
+	}))
+
+	a := &app{store: st, layout: tenant.DefaultLayout}
+	got := a.installs()
+	require.Len(t, got, 2)
+	require.Equal(t, wowdir.ChronicleCustomLogGlobs(vanilla), got[0].LogGlobs)
+	require.Equal(t, wowdir.WoWCombatLogGlobs(tbc), got[1].LogGlobs)
+	require.Equal(t, "_thrall.txt", a.appendGroupKey(got[0], filepath.Join(vanilla, "CustomData", "Chronicle_Thrall.txt")))
+	require.Empty(t, a.appendGroupKey(got[1], filepath.Join(tbc, "Logs", "WoWCombatLog.txt")))
 }
 
 func TestInstallsRereadsChangedRealmlist(t *testing.T) {

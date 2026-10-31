@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -47,17 +48,31 @@ type Install struct {
 	BaseURL string
 	// Realmlist is the normalized host read from realmlist.wtf, when present.
 	Realmlist string
+	// DetectedGameFormat is a high-confidence client format inferred from local
+	// build metadata. Most legacy clients cannot be distinguished this way.
+	DetectedGameFormat string
 }
 
 func foreverInstall(dir string) Install {
 	logDir := filepath.Join(dir, "Logs")
-	return Install{
-		Flavor:   filepath.Base(dir),
-		Dir:      dir,
-		LogDir:   logDir,
-		LogGlobs: wowCombatLogGlobs(logDir),
-		BaseURL:  tenant.ForeverBaseURL,
+	install := Install{
+		Flavor:             filepath.Base(dir),
+		Dir:                dir,
+		LogDir:             logDir,
+		LogGlobs:           WoWCombatLogGlobs(dir),
+		BaseURL:            tenant.ForeverBaseURL,
+		DetectedGameFormat: detectedGameFormat(dir),
 	}
+	if install.DetectedGameFormat == "classic_1.14.2" {
+		if host := readHermesProxyServer(dir); host != "" {
+			if realm, ok := tenant.ForRealm(host); ok {
+				install.Flavor = realm.Name
+				install.BaseURL = realm.BaseURL
+				install.Realmlist = host
+			}
+		}
+	}
+	return install
 }
 
 func legacyInstall(dir, host string, realm tenant.Realm) Install {
@@ -66,17 +81,118 @@ func legacyInstall(dir, host string, realm tenant.Realm) Install {
 		Flavor:    realm.Name,
 		Dir:       dir,
 		LogDir:    logDir,
-		LogGlobs:  append(wowCombatLogGlobs(logDir), filepath.Join(dir, "CustomData", "Chronicle_*.txt")),
+		LogGlobs:  append(WoWCombatLogGlobs(dir), ChronicleCustomLogGlobs(dir)...),
 		BaseURL:   realm.BaseURL,
 		Realmlist: host,
 	}
 }
 
-func wowCombatLogGlobs(logDir string) []string {
+// WoWCombatLogGlobs returns the standard Blizzard combat-log paths for an install.
+func WoWCombatLogGlobs(dir string) []string {
+	logDir := filepath.Join(dir, "Logs")
 	return []string{
 		filepath.Join(logDir, "WoWCombatLog.txt"),
 		filepath.Join(logDir, "WoWCombatLog-*.txt"),
 	}
+}
+
+// ChronicleCustomLogGlobs returns ChronicleCompanion's per-character 1.12a logs.
+func ChronicleCustomLogGlobs(dir string) []string {
+	return []string{filepath.Join(dir, "CustomData", "Chronicle_*.txt")}
+}
+
+const classic1142Build = "1.14.2.42597"
+
+func detectedGameFormat(dir string) string {
+	for _, buildInfo := range []string{
+		filepath.Join(dir, ".build.info"),
+		filepath.Join(filepath.Dir(dir), ".build.info"),
+	} {
+		f, err := os.Open(buildInfo)
+		if err != nil {
+			continue
+		}
+		version := readBuildInfoVersion(f)
+		_ = f.Close()
+		if version == classic1142Build {
+			return "classic_1.14.2"
+		}
+	}
+	return ""
+}
+
+var hermesServerPattern = regexp.MustCompile(`(?i)<add\s+key=["']ServerAddress["']\s+value=["']([^"']+)["']`)
+
+func readHermesProxyServer(dir string) string {
+	parent := filepath.Dir(dir)
+	grandparent := filepath.Dir(parent)
+	paths := []string{
+		filepath.Join(dir, "HermesProxy.config"),
+		filepath.Join(parent, "HermesProxy.config"),
+		filepath.Join(parent, "Hermes", "HermesProxy.config"),
+		filepath.Join(grandparent, "Hermes", "HermesProxy.config"),
+	}
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		match := hermesServerPattern.FindSubmatch(body)
+		if len(match) != 2 {
+			continue
+		}
+		host := strings.TrimSpace(string(match[1]))
+		if colon := strings.LastIndex(host, ":"); colon > 0 {
+			host = host[:colon]
+		}
+		return strings.TrimSuffix(strings.ToLower(host), ".")
+	}
+	return ""
+}
+
+// readBuildInfoVersion returns the active product version, preferring
+// wow_classic_era when a Blizzard installation contains multiple products.
+func readBuildInfoVersion(r io.Reader) string {
+	scanner := bufio.NewScanner(r)
+	var columns []string
+	activeIndex, versionIndex, productIndex := -1, -1, -1
+	first := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "|")
+		if columns == nil {
+			columns = make([]string, len(fields))
+			for i, field := range fields {
+				columns[i] = strings.TrimSpace(strings.SplitN(field, "!", 2)[0])
+				switch columns[i] {
+				case "Active":
+					activeIndex = i
+				case "Version":
+					versionIndex = i
+				case "Product":
+					productIndex = i
+				}
+			}
+			continue
+		}
+		if versionIndex < 0 || versionIndex >= len(fields) {
+			continue
+		}
+		if activeIndex >= 0 && (activeIndex >= len(fields) || strings.TrimSpace(fields[activeIndex]) != "1") {
+			continue
+		}
+		version := strings.TrimSpace(fields[versionIndex])
+		if productIndex >= 0 && productIndex < len(fields) && strings.TrimSpace(fields[productIndex]) == "wow_classic_era" {
+			return version
+		}
+		if first == "" {
+			first = version
+		}
+	}
+	return first
 }
 
 // StandardRoots lists the places WoW is commonly installed on this OS.

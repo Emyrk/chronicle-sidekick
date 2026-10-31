@@ -57,13 +57,19 @@ const CurrentConfigVersion = 1
 type GameFormat string
 
 const (
-	GameFormatTBC243    GameFormat = "tbc_2.4.3"
-	GameFormatWrath335a GameFormat = "wotlk_3.3.5a"
+	GameFormatVanilla112a GameFormat = "vanilla_1.12a"
+	GameFormatClassic1142 GameFormat = "classic_1.14.2"
+	GameFormatTBC243      GameFormat = "tbc_2.4.3"
+	GameFormatWrath335a   GameFormat = "wotlk_3.3.5a"
 )
 
 // UploadFormat returns the Chronicle parser format for this game format.
 func (f GameFormat) UploadFormat() string {
 	switch f {
+	case GameFormatVanilla112a:
+		return "1.12a-cc-addon"
+	case GameFormatClassic1142:
+		return "hermesproxy_1_14_2_cc"
 	case GameFormatTBC243:
 		return "2.4.3-cc-addon"
 	case GameFormatWrath335a:
@@ -118,8 +124,10 @@ func DefaultConfig() SidekickConfig {
 // AutoUploadCapabilities lists the implementations in this Sidekick build.
 func AutoUploadCapabilities() map[GameFormat][]AutoUploadMode {
 	return map[GameFormat][]AutoUploadMode{
-		GameFormatTBC243:    {AutoUploadOnGameExit},
-		GameFormatWrath335a: {AutoUploadOnGameExit},
+		GameFormatVanilla112a: {AutoUploadOnGameExit},
+		GameFormatClassic1142: {AutoUploadOnGameExit},
+		GameFormatTBC243:      {AutoUploadOnGameExit},
+		GameFormatWrath335a:   {AutoUploadOnGameExit},
 	}
 }
 

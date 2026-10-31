@@ -67,6 +67,9 @@ type Config struct {
 	// CaptureSidekickStorage reports whether this install uses the optional
 	// ChronicleSidekickBridge SavedVariables artifact.
 	CaptureSidekickStorage func(wowdir.Install) bool
+	// AppendGroupKey identifies an independently appended stream within one
+	// install. Empty keeps the install-wide grouping used by standard clients.
+	AppendGroupKey func(wowdir.Install, string) string
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
@@ -706,11 +709,15 @@ func (e *Engine) worker(ctx context.Context) {
 
 func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	st := e.cfg.Store.Get()
-	group, appendExisting := selectAppendGroup(st.ArchiveGroups, j.install.Dir, j.startedAt)
+	sourceKey := ""
+	if e.cfg.AppendGroupKey != nil {
+		sourceKey = e.cfg.AppendGroupKey(j.install, j.path)
+	}
+	group, appendExisting := selectAppendGroup(st.ArchiveGroups, j.install.Dir, sourceKey, j.startedAt)
 	if !appendExisting {
 		group = store.ArchiveGroup{
 			ID: uuid.NewString(), InstallDirectory: j.install.Dir,
-			InstallID: sidekick.DirectoryID(j.install.Dir), CreatedAt: j.queuedAt,
+			InstallID: sidekick.DirectoryID(j.install.Dir), SourceKey: sourceKey, CreatedAt: j.queuedAt,
 			UploadID: uuid.NewString(),
 		}
 	} else {
@@ -798,10 +805,10 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	return nil
 }
 
-func selectAppendGroup(groups map[string]store.ArchiveGroup, installDir string, startedAt time.Time) (store.ArchiveGroup, bool) {
+func selectAppendGroup(groups map[string]store.ArchiveGroup, installDir, sourceKey string, startedAt time.Time) (store.ArchiveGroup, bool) {
 	var best store.ArchiveGroup
 	for _, group := range groups {
-		if group.InstallDirectory != installDir || group.Pending || group.LogID == "" || group.LastExitAt.IsZero() || startedAt.IsZero() {
+		if group.InstallDirectory != installDir || group.SourceKey != sourceKey || group.Pending || group.LogID == "" || group.LastExitAt.IsZero() || startedAt.IsZero() {
 			continue
 		}
 		restartedAfter := startedAt.Sub(group.LastExitAt)

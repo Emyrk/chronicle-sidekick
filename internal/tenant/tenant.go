@@ -57,6 +57,8 @@ var realms = map[string]Realm{
 	"play.octowow.st":         {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com"},
 	"apac.capycraft.io":       {Name: "CapyCraft", BaseURL: "https://capy.chronicleclassic.com"},
 	"logon.vanillaplus.org":   {Name: "VanillaPlus", BaseURL: "https://vanillaplus.chronicleclassic.com"},
+	"login.twinstar-wow.com":  {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
+	"login2.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
 	"login3.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
 	"login.moonwell.su":       {Name: "Moonwell", BaseURL: "https://moonwell.chronicleclassic.com"},
 	"crusader-storm.com":      {Name: "Crusader Storm", BaseURL: "https://crusader-storm.chronicleclassic.com"},

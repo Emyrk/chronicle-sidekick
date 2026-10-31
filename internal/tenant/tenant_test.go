@@ -24,6 +24,8 @@ func TestForRealm(t *testing.T) {
 		"PLAY.OCTOWOW.ST.":        "https://octo.chronicleclassic.com",
 		"apac.capycraft.io":       "https://capy.chronicleclassic.com",
 		"logon.vanillaplus.org":   "https://vanillaplus.chronicleclassic.com",
+		"login.twinstar-wow.com":  "https://kronos.chronicleclassic.com",
+		"login2.twinstar-wow.com": "https://kronos.chronicleclassic.com",
 		"login3.twinstar-wow.com": "https://kronos.chronicleclassic.com",
 		"login.moonwell.su":       "https://moonwell.chronicleclassic.com",
 		"crusader-storm.com":      "https://crusader-storm.chronicleclassic.com",
