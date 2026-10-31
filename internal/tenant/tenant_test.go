@@ -20,6 +20,7 @@ func TestResolve(t *testing.T) {
 func TestForRealm(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
+		"192.168.1.214":           "https://octoptr.chronicleclassic.com",
 		"185.165.170.6":           "https://octo.chronicleclassic.com",
 		"PLAY.OCTOWOW.ST.":        "https://octo.chronicleclassic.com",
 		"apac.capycraft.io":       "https://capy.chronicleclassic.com",

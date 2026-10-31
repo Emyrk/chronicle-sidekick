@@ -53,6 +53,7 @@ type Realm struct {
 }
 
 var realms = map[string]Realm{
+	"192.168.1.214":           {Name: "OctoPTR", BaseURL: "https://octoptr.chronicleclassic.com"},
 	"185.165.170.6":           {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com"},
 	"play.octowow.st":         {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com"},
 	"apac.capycraft.io":       {Name: "CapyCraft", BaseURL: "https://capy.chronicleclassic.com"},

@@ -108,6 +108,7 @@ func TestResolveLegacyClients(t *testing.T) {
 		wantTenant string
 		localized  bool
 	}{
+		{name: "octo ptr", realmlist: ` set realmlist "192.168.1.214"`, wantRealm: "192.168.1.214", wantTenant: "https://octoptr.chronicleclassic.com"},
 		{name: "octo hostname", realmlist: `SET realmlist "play.octowow.st"`, wantRealm: "play.octowow.st", wantTenant: "https://octo.chronicleclassic.com"},
 		{name: "octo ip", realmlist: "set realmlist 185.165.170.6", wantRealm: "185.165.170.6", wantTenant: "https://octo.chronicleclassic.com"},
 		{name: "capy", realmlist: "set realmlist apac.capycraft.io", wantRealm: "apac.capycraft.io", wantTenant: "https://capy.chronicleclassic.com"},
