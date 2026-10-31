@@ -82,9 +82,11 @@ restarts.
 Sidekick ignores blank lines and malformed records. An unterminated final line
 is ignored until a later append completes it. When Sidekick detects that the
 corresponding WoW client has stopped, it performs one final drain and removes
-the request journal only after every valid request and retry record is durably
-represented in Sidekick state. Failed requests remain recoverable from that
-state when the addon starts again and appends a newer retry record.
+the request journal only after every valid request and retry record has entered
+Sidekick's durable upload pipeline. Sidekick then clears the installation's RPC
+response state because the closed client can no longer consume it. Accepted
+uploads continue through the normal archive, retry, and restart-recovery flow
+without retaining addon request metadata.
 
 ### Upload request
 

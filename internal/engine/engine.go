@@ -150,17 +150,18 @@ type Engine struct {
 
 	// mu guards everything the poll loop and the upload worker share: tracker,
 	// status and the fields the worker reads (token, wowUp, now, ...).
-	mu             sync.Mutex
-	pending        []job
-	blocked        []job // immutable snapshots waiting for a refreshed token
-	current        *job
-	kick           chan struct{} // wakes the worker when pending grows
-	workerOnce     sync.Once
-	installRunning map[string]bool
-	installSeen    map[string]bool
-	installStarted map[string]time.Time
-	addonQueued    map[string]bool
-	installExited  map[string]time.Time
+	mu                  sync.Mutex
+	pending             []job
+	blocked             []job // immutable snapshots waiting for a refreshed token
+	current             *job
+	kick                chan struct{} // wakes the worker when pending grows
+	workerOnce          sync.Once
+	installRunning      map[string]bool
+	installSeen         map[string]bool
+	installStarted      map[string]time.Time
+	addonQueued         map[string]bool
+	addonCleanupPending map[string]bool
+	installExited       map[string]time.Time
 }
 
 type uploadRequest struct {
@@ -215,17 +216,18 @@ func New(cfg Config) *Engine {
 	}
 	st := pruneUploaded(cfg.Store, cfg.Logger)
 	e := &Engine{
-		cfg:            cfg,
-		tracker:        watch.NewTracker(st.Uploaded),
-		manual:         make(chan uploadRequest, 1),
-		wake:           make(chan struct{}, 1),
-		kick:           make(chan struct{}, 1),
-		status:         Status{ReportURL: st.LastReportURL},
-		installRunning: map[string]bool{},
-		installSeen:    map[string]bool{},
-		installStarted: map[string]time.Time{},
-		addonQueued:    map[string]bool{},
-		installExited:  map[string]time.Time{},
+		cfg:                 cfg,
+		tracker:             watch.NewTracker(st.Uploaded),
+		manual:              make(chan uploadRequest, 1),
+		wake:                make(chan struct{}, 1),
+		kick:                make(chan struct{}, 1),
+		status:              Status{ReportURL: st.LastReportURL},
+		installRunning:      map[string]bool{},
+		installSeen:         map[string]bool{},
+		installStarted:      map[string]time.Time{},
+		addonQueued:         map[string]bool{},
+		addonCleanupPending: map[string]bool{},
+		installExited:       map[string]time.Time{},
 		wait: func(ctx context.Context, d time.Duration) {
 			t := time.NewTimer(d)
 			defer t.Stop()
@@ -472,7 +474,15 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	// durable before the append-only journal is removed.
 	e.scanRPCRequests(ctx, now, stoppedRPC)
 	for _, install := range cleanupRPC {
-		e.removeHandledRPCRequests(install)
+		e.addonCleanupPending[install.Dir] = true
+	}
+	for _, install := range installs {
+		if runningByDir[install.Dir] || !e.addonCleanupPending[install.Dir] {
+			continue
+		}
+		if e.removeHandledRPCRequests(install) && e.clearAddonRequestState(install) {
+			delete(e.addonCleanupPending, install.Dir)
+		}
 	}
 	for _, f := range files {
 		if !e.watching[f.Path] {
