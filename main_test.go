@@ -515,6 +515,8 @@ func TestInstallsSelectsLogsForManagedGameFormat(t *testing.T) {
 	require.Equal(t, wowdir.WoWCombatLogGlobs(tbc), got[1].LogGlobs)
 	require.Equal(t, "_thrall.txt", a.appendGroupKey(got[0], filepath.Join(vanilla, "CustomData", "Chronicle_Thrall.txt")))
 	require.Empty(t, a.appendGroupKey(got[1], filepath.Join(tbc, "Logs", "WoWCombatLog.txt")))
+	require.True(t, a.companionRPCEnabled(got[0]))
+	require.False(t, a.companionRPCEnabled(got[1]))
 }
 
 func TestInstallsRereadsChangedRealmlist(t *testing.T) {

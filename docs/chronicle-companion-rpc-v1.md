@@ -197,8 +197,9 @@ Example:
 RPC<TAB>1<TAB>0.16.0<TAB>1730000010<TAB>ready<TAB><LF>
 ```
 
-`heartbeat` is Unix seconds from the local machine. Sidekick normally refreshes
-the snapshot on its five-second engine poll.
+`heartbeat` is Unix seconds from the local machine. Sidekick scans requests and
+refreshes the snapshot on its five-second engine poll only when the corresponding
+configured Vanilla 1.12a client is running.
 
 Initial readiness values are:
 

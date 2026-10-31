@@ -161,6 +161,7 @@ func run() error {
 		AutoUpload:             a.autoUploadTrigger,
 		CaptureSidekickStorage: a.captureSidekickStorage,
 		AppendGroupKey:         a.appendGroupKey,
+		CompanionRPC:           a.companionRPCEnabled,
 		Token:                  a.cachedToken,
 		Upload: func(ctx context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
@@ -277,6 +278,10 @@ func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
 		return gameFormatForInstall(install, config)
 	}
 	return ""
+}
+
+func (a *app) companionRPCEnabled(install wowdir.Install) bool {
+	return gameFormatForInstall(install, a.store.Get().EffectiveConfig()) == sidekick.GameFormatVanilla112a
 }
 
 func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {

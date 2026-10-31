@@ -70,6 +70,9 @@ type Config struct {
 	// AppendGroupKey identifies an independently appended stream within one
 	// install. Empty keeps the install-wide grouping used by standard clients.
 	AppendGroupKey func(wowdir.Install, string) string
+	// CompanionRPC reports whether this install supports ChronicleCompanion's
+	// local file RPC. The engine scans enabled installs only while they are running.
+	CompanionRPC func(wowdir.Install) bool
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
@@ -382,6 +385,19 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
+func companionRPCInstalls(installs []wowdir.Install, running map[string]bool, enabled func(wowdir.Install) bool) []wowdir.Install {
+	if enabled == nil {
+		return nil
+	}
+	var selected []wowdir.Install
+	for _, install := range installs {
+		if running[install.Dir] && enabled(install) {
+			selected = append(selected, install)
+		}
+	}
+	return selected
+}
+
 func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 	var req *uploadRequest
 	if manual {
@@ -394,7 +410,6 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 	e.workerOnce.Do(func() { go e.worker(ctx) })
 	e.cleanupArchives(now)
 	installs := e.cfg.Installs()
-	e.scanRPCRequests(ctx, now, installs)
 	var patterns, installDirs []string
 	for i := range installs {
 		in := &installs[i]
@@ -442,6 +457,7 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 			runningByDir[install.Dir] = running
 		}
 	}
+	e.scanRPCRequests(ctx, now, companionRPCInstalls(installs, runningByDir, e.cfg.CompanionRPC))
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {

@@ -66,6 +66,16 @@ func TestParseRPCRequestsIgnoresPartialUnsupportedAndMalformedRecords(t *testing
 	require.Equal(t, time.Unix(1000, 0), requests[0].created)
 }
 
+func TestCompanionRPCInstallsRequiresEnabledAndRunning(t *testing.T) {
+	t.Parallel()
+	installs := []wowdir.Install{{Dir: "running-1.12"}, {Dir: "stopped-1.12"}, {Dir: "running-other"}}
+	running := map[string]bool{"running-1.12": true, "stopped-1.12": false, "running-other": true}
+	enabled := func(install wowdir.Install) bool { return install.Dir != "running-other" }
+
+	require.Equal(t, installs[:1], companionRPCInstalls(installs, running, enabled))
+	require.Nil(t, companionRPCInstalls(installs, running, nil))
+}
+
 func TestAddonRequestMovesIntoManagedArchiveAndPublishesStatus(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
