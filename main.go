@@ -292,7 +292,7 @@ func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, i
 		Platform: platform, SidekickVersion: appVersion,
 		StartAtLogin: startAtLogin, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: directories,
-		Issues:         append([]sidekick.Issue(nil), issues...),
+		Issues:         append([]sidekick.Issue{}, issues...),
 	}
 }
 

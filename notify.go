@@ -41,3 +41,25 @@ func openURL(url string) {
 		go func() { _ = cmd.Wait() }()
 	}
 }
+
+func fileExplorerCommand(goos, path string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{path}
+	case "windows":
+		return "explorer.exe", []string{path}
+	default:
+		return "xdg-open", []string{path}
+	}
+}
+
+// openDirectory opens path in the platform's file explorer.
+func openDirectory(path string) error {
+	name, args := fileExplorerCommand(runtime.GOOS, path)
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}

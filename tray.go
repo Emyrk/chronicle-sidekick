@@ -65,11 +65,11 @@ type wowMenuEntry struct {
 }
 
 type menuItems struct {
-	status, version, upload, wows, report, settings, connect, cancelConnect, disconnect, update, forceUpdate *systray.MenuItem
-	wowFolders                                                                                               map[string]wowMenuEntry
-	uploadEntries                                                                                            []wowMenuEntry
-	uploadDirs                                                                                               []string
-	uploadCount                                                                                              int
+	status, version, upload, wows, report, settings, logs, connect, cancelConnect, disconnect, update, forceUpdate *systray.MenuItem
+	wowFolders                                                                                                     map[string]wowMenuEntry
+	uploadEntries                                                                                                  []wowMenuEntry
+	uploadDirs                                                                                                     []string
+	uploadCount                                                                                                    int
 }
 
 func (a *app) runTray(ctx context.Context) error {
@@ -95,6 +95,7 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.report.Disable()
 	a.items.settings = systray.AddMenuItem("View Settings…", "Manage Sidekick upload and archive settings on Chronicle")
 	a.items.settings.Disable()
+	a.items.logs = systray.AddMenuItem("View Logs…", "Open Sidekick diagnostic logs in the file explorer")
 	a.items.connect = systray.AddMenuItem("Connect to Chronicle…", "")
 	a.items.connect.Hide()
 	a.items.cancelConnect = systray.AddMenuItem("Cancel connection", "Cancel the current browser sign-in and start over")
@@ -131,7 +132,7 @@ func (a *app) onReady(ctx context.Context) {
 
 	if a.stateDebug {
 		for _, item := range []*systray.MenuItem{
-			a.items.upload, a.items.report, a.items.settings, a.items.connect, a.items.cancelConnect,
+			a.items.upload, a.items.report, a.items.settings, a.items.logs, a.items.connect, a.items.cancelConnect,
 			a.items.disconnect, a.items.update, a.items.forceUpdate, a.items.wows,
 			choose, detectFolders, login,
 		} {
@@ -166,6 +167,15 @@ func (a *app) onReady(ctx context.Context) {
 				}
 			case <-a.items.settings.ClickedCh:
 				go a.viewSettings(ctx, openURL)
+			case <-a.items.logs.ClickedCh:
+				dir, err := store.Dir()
+				if err == nil {
+					err = openDirectory(dir)
+				}
+				if err != nil {
+					a.logger.Error("open log folder", "err", err)
+					notify("Chronicle", "Couldn't open the Sidekick log folder.")
+				}
 			case <-a.items.connect.ClickedCh:
 				go a.connect(ctx)
 			case <-a.items.cancelConnect.ClickedCh:

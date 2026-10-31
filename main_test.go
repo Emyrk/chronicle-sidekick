@@ -93,6 +93,20 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	}, status)
 }
 
+func TestSidekickStatusUsesEmptyRequiredCollections(t *testing.T) {
+	t.Parallel()
+
+	status := sidekickStatus(nil, sidekick.DefaultConfig(), nil, "windows/amd64", "1.2.3", false)
+	require.NotNil(t, status.AutoUploadCapabilities)
+	require.NotNil(t, status.WoWDirectories)
+	require.NotNil(t, status.Issues)
+
+	body, err := json.Marshal(status)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"wow_directories":[]`)
+	require.Contains(t, string(body), `"issues":[]`)
+}
+
 func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	t.Parallel()
 	installs := make([]wowdir.Install, maxStatusWoWDirectories+1)
