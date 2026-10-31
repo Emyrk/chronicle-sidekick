@@ -76,10 +76,15 @@ var ErrUnauthorized = errors.New("not signed in to Chronicle")
 type Error struct {
 	Status  int
 	Message string
+	Detail  string
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("upload failed (HTTP %d): %s", e.Status, e.Message)
+	message := e.Message
+	if e.Detail != "" && e.Detail != message {
+		message += ": " + e.Detail
+	}
+	return fmt.Sprintf("upload failed (HTTP %d): %s", e.Status, message)
 }
 
 // Retryable reports whether the same request may succeed later.
@@ -134,8 +139,9 @@ type uploadResponse struct {
 	// URL is sent by servers that support idempotent re-upload; older ones
 	// only send log_id.
 	URL string `json:"url"`
-	// Message and Link come from error responses.
+	// Message, Detail and Link come from error responses.
 	Message string `json:"message"`
+	Detail  string `json:"detail"`
 	Link    string `json:"link"`
 }
 
@@ -235,7 +241,7 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
 	}
-	return Result{}, &Error{Status: resp.StatusCode, Message: msg}
+	return Result{}, &Error{Status: resp.StatusCode, Message: msg, Detail: out.Detail}
 }
 
 type sourceResponse struct {

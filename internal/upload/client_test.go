@@ -192,6 +192,13 @@ func TestUpload(t *testing.T) {
 		require.False(t, upload.Retryable(err))
 	})
 
+	t.Run("structured error detail", func(t *testing.T) {
+		t.Parallel()
+		c, _, _ := respond(400, `{"message":"Invalid Format","Detail":"expected a Wrath 3.3.5a combat log"}`)
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.EqualError(t, err, "upload failed (HTTP 400): Invalid Format: expected a Wrath 3.3.5a combat log")
+	})
+
 	t.Run("server error is retryable, bad request is not", func(t *testing.T) {
 		t.Parallel()
 		c, _, _ := respond(503, ``)
