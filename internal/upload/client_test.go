@@ -3,6 +3,7 @@ package upload_test
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -228,6 +229,33 @@ func TestUpload(t *testing.T) {
 		_, err := c.Upload(context.Background(), path, "", size)
 		require.ErrorIs(t, err, upload.ErrUnauthorized)
 	})
+}
+
+func TestIsQuotaError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "Chronicle storage limit",
+			err: &upload.Error{
+				Status: 400, Message: "storage limit exceeded",
+				Detail: "This append would exceed the storage limit of 10 GB; delete log files to free up space",
+			},
+			want: true,
+		},
+		{name: "rate limit", err: &upload.Error{Status: 429, Message: "Too Many Requests"}},
+		{name: "unrelated bad request", err: &upload.Error{Status: 400, Message: "Invalid Format"}},
+		{name: "network error", err: errors.New("connection reset")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, upload.IsQuotaError(tt.err))
+		})
+	}
 }
 
 func TestUploadFast(t *testing.T) {

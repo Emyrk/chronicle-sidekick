@@ -98,6 +98,18 @@ func Retryable(err error) bool {
 	return !errors.Is(err, ErrUnauthorized) && !errors.Is(err, context.Canceled) && !errors.Is(err, os.ErrNotExist)
 }
 
+// IsQuotaError reports whether Chronicle rejected an upload because it would
+// exceed the account's storage limit.
+func IsQuotaError(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusBadRequest {
+		return false
+	}
+	text := strings.ToLower(e.Message + " " + e.Detail)
+	return strings.Contains(text, "storage limit exceeded") ||
+		strings.Contains(text, "exceed the storage limit")
+}
+
 // Result is the outcome of one upload.
 type Result struct {
 	// LogID identifies the Chronicle log group that received the upload.

@@ -1114,7 +1114,15 @@ func (e *Engine) fail(j job, err error) {
 	e.tracker.MarkFailed(j.path, j.size)
 	e.mu.Unlock()
 	e.reportUploadIssue(err)
-	e.cfg.Notify("Chronicle upload failed", err.Error())
+	e.notifyUploadFailure(err)
+}
+
+func (e *Engine) notifyUploadFailure(err error) {
+	message := err.Error()
+	if upload.IsQuotaError(err) {
+		message = "Your Chronicle storage is full. Delete old logs on Chronicle to free up space, then try again. Your log is still saved on this computer.\n\n" + message
+	}
+	e.cfg.Notify("Chronicle upload failed", message)
 }
 
 func (e *Engine) finish(f job, src string, res upload.Result) {
