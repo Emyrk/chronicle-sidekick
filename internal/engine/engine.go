@@ -64,6 +64,9 @@ type Config struct {
 	Installs func() []wowdir.Install
 	// AutoUpload returns the automatic trigger implemented for one install.
 	AutoUpload func(wowdir.Install) watch.Trigger
+	// CaptureSidekickStorage reports whether this install uses the optional
+	// ChronicleSidekickBridge SavedVariables artifact.
+	CaptureSidekickStorage func(wowdir.Install) bool
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
@@ -728,7 +731,11 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	}
 	combatPath := archiveCombatPath(dir, j.queuedAt)
 	group.Files = append(group.Files, combatPath)
-	sidecarSource, sidecarErr := newestSidecarPath(j.install.Dir)
+	var sidecarSource string
+	var sidecarErr error
+	if e.cfg.CaptureSidekickStorage != nil && e.cfg.CaptureSidekickStorage(j.install) {
+		sidecarSource, sidecarErr = newestSidecarPath(j.install.Dir)
+	}
 	storagePath := ""
 	if sidecarErr != nil {
 		e.cfg.Logger.Warn("finding optional Sidekick storage", "err", sidecarErr)

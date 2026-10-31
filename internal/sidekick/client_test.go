@@ -27,8 +27,16 @@ func TestHashConfig(t *testing.T) {
 
 func TestGameFormatUploadFormat(t *testing.T) {
 	t.Parallel()
+	require.Equal(t, "2.4.3-cc-addon", sidekick.GameFormatTBC243.UploadFormat())
 	require.Equal(t, "3.3.5a-cc-addon", sidekick.GameFormatWrath335a.UploadFormat())
 	require.Empty(t, sidekick.GameFormat("future").UploadFormat())
+}
+
+func TestGameFormatSidekickStorage(t *testing.T) {
+	t.Parallel()
+	require.False(t, sidekick.GameFormatTBC243.IncludesSidekickStorage())
+	require.True(t, sidekick.GameFormatWrath335a.IncludesSidekickStorage())
+	require.False(t, sidekick.GameFormat("future").IncludesSidekickStorage())
 }
 
 func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
@@ -37,7 +45,8 @@ func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			"tbc":   {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
+			"wrath": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
 	require.NoError(t, valid.Validate())

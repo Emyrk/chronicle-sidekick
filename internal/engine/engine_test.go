@@ -27,27 +27,28 @@ type harness struct {
 	st      *store.Store
 	logPath string
 
-	mu               sync.Mutex
-	running          bool
-	runningInstalls  map[string]bool
-	runningInstallFn func(wowdir.Install) bool
-	token            string
-	results          []error // consumed one per Upload call
-	res              upload.Result
-	uploads          int
-	sources          []string // the source id of each Upload call
-	destinations     []string // Chronicle tenant URL of each Upload call
-	fast             []bool   // the fast flag of each Upload call
-	baseURL          string   // tenant URL returned with the test install
-	installs         []wowdir.Install
-	installsFn       func() []wowdir.Install
-	autoUpload       func(wowdir.Install) watch.Trigger
-	uploadPaths      []string
-	uploadRequests   []engine.UploadRequest
-	lookups          int           // pre-flight source lookups made
-	gate             chan struct{} // when set, Upload blocks until it is closed
-	notified         []string
-	statuses         []engine.Status
+	mu                     sync.Mutex
+	running                bool
+	runningInstalls        map[string]bool
+	runningInstallFn       func(wowdir.Install) bool
+	token                  string
+	results                []error // consumed one per Upload call
+	res                    upload.Result
+	uploads                int
+	sources                []string // the source id of each Upload call
+	destinations           []string // Chronicle tenant URL of each Upload call
+	fast                   []bool   // the fast flag of each Upload call
+	baseURL                string   // tenant URL returned with the test install
+	installs               []wowdir.Install
+	installsFn             func() []wowdir.Install
+	autoUpload             func(wowdir.Install) watch.Trigger
+	captureSidekickStorage bool
+	uploadPaths            []string
+	uploadRequests         []engine.UploadRequest
+	lookups                int           // pre-flight source lookups made
+	gate                   chan struct{} // when set, Upload blocks until it is closed
+	notified               []string
+	statuses               []engine.Status
 }
 
 func newHarness(t testing.TB) *harness { return newHarnessToken(t, nil) }
@@ -69,7 +70,10 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 	dir := t.TempDir()
 	logDir := filepath.Join(dir, "_x_", "Logs")
 	require.NoError(t, os.MkdirAll(logDir, 0o755))
-	h := &harness{logPath: filepath.Join(logDir, "WoWCombatLog.txt"), token: "tok", running: true}
+	h := &harness{
+		logPath: filepath.Join(logDir, "WoWCombatLog.txt"), token: "tok", running: true,
+		captureSidekickStorage: true,
+	}
 	require.NoError(t, os.WriteFile(h.logPath, []byte("some combat"), 0o644))
 	st, err := store.Open(filepath.Join(dir, "state.json"))
 	require.NoError(t, err)
@@ -101,6 +105,7 @@ func newHarnessLookup(t testing.TB, tokenFn func() string, logger *slog.Logger, 
 			}
 			return watch.Trigger{}
 		},
+		CaptureSidekickStorage: func(wowdir.Install) bool { return h.captureSidekickStorage },
 		Token: func() string {
 			if tokenFn != nil {
 				return tokenFn()
@@ -550,6 +555,27 @@ func TestEngineSnapshotsNewestSidecar(t *testing.T) {
 	require.FileExists(t, oldPath)
 	require.Equal(t, "new", string(body))
 	require.Equal(t, filepath.Dir(h.uploadRequests[0].Path), filepath.Dir(storage))
+}
+
+func TestEngineSkipsSidecarWhenInstallDoesNotUseArtifacts(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.captureSidekickStorage = false
+	wowDir := filepath.Dir(filepath.Dir(h.logPath))
+	sidecar := filepath.Join(wowDir, "WTF", "Account", "account", "SavedVariables", "ChronicleSidekickBridgeWoTLK.lua")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sidecar), 0o755))
+	require.NoError(t, os.WriteFile(sidecar, []byte("untouched"), 0o644))
+
+	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
+
+	require.Len(t, h.uploadRequests, 1)
+	require.Empty(t, h.uploadRequests[0].SidekickStoragePath)
+	require.FileExists(t, sidecar)
+	groups := h.st.Get().ArchiveGroups
+	require.Len(t, groups, 1)
+	for _, group := range groups {
+		require.Equal(t, []string{h.uploadRequests[0].Path}, group.Files)
+	}
 }
 
 func TestEngineUploadsCombatLogWhenOptionalSidecarCannotBeCopied(t *testing.T) {

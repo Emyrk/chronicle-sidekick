@@ -123,9 +123,37 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 		}
 	}))
 	a := &app{store: st, layout: tenant.DefaultLayout}
-	require.True(t, a.autoUploadTrigger(wowdir.Install{Dir: dir}).OnExit)
+	install := wowdir.Install{Dir: dir}
+	require.True(t, a.autoUploadTrigger(install).OnExit)
+	require.True(t, a.captureSidekickStorage(install))
 	require.False(t, a.autoUploadTrigger(wowdir.Install{Dir: filepath.Join(dir, "other")}).OnExit)
 	require.Equal(t, sidekick.GameFormatWrath335a, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
+}
+
+func TestTBCConfigEnablesExitUploadWithoutSidekickStorage(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := fakeLegacyInstall(t, root, "Moonwell", "login.moonwell.su")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	directoryID := sidekick.DirectoryID(dir)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{dir}
+		s.WoWPathsSet = true
+		s.Config = sidekick.SidekickConfig{
+			Version: sidekick.CurrentConfigVersion,
+			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
+			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
+				directoryID: {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
+			},
+		}
+	}))
+	a := &app{store: st, layout: tenant.DefaultLayout}
+	install := wowdir.Install{Dir: dir}
+
+	require.True(t, a.autoUploadTrigger(install).OnExit)
+	require.False(t, a.captureSidekickStorage(install))
+	require.Equal(t, sidekick.GameFormatTBC243, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
 func TestViewSettingsRefreshesStatusAndConfigBeforeOpening(t *testing.T) {

@@ -156,18 +156,24 @@ func run() error {
 		return game.Running(ctx, []string{install.Dir})
 	}
 	a.engine = engine.New(engine.Config{
-		Store:      st,
-		Installs:   a.installs,
-		AutoUpload: a.autoUploadTrigger,
-		Token:      a.cachedToken,
+		Store:                  st,
+		Installs:               a.installs,
+		AutoUpload:             a.autoUploadTrigger,
+		CaptureSidekickStorage: a.captureSidekickStorage,
+		Token:                  a.cachedToken,
 		Upload: func(ctx context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
 			if err != nil {
 				return upload.Result{}, err
 			}
+			gameFormat := a.gameFormatForPath(req.Path)
+			storagePath := req.SidekickStoragePath
+			if !gameFormat.IncludesSidekickStorage() {
+				storagePath = ""
+			}
 			c := upload.Client{
-				BaseURL: req.BaseURL, Token: token, Format: a.gameFormatForPath(req.Path).UploadFormat(), Fast: req.Fast,
-				SidekickStoragePath: req.SidekickStoragePath, AppendLogID: req.AppendLogID,
+				BaseURL: req.BaseURL, Token: token, Format: gameFormat.UploadFormat(), Fast: req.Fast,
+				SidekickStoragePath: storagePath, AppendLogID: req.AppendLogID,
 				UploadID: req.UploadID, ChunkSequence: req.ChunkSequence,
 			}
 			return c.Upload(ctx, req.Path, req.SourceID, req.Size)
@@ -250,13 +256,20 @@ func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
 
 func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 	config, ok := a.store.Get().EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
-	if !ok {
+	if !ok || config.AutoUpload != sidekick.AutoUploadOnGameExit {
 		return watch.Trigger{}
 	}
-	if config.GameFormat == sidekick.GameFormatWrath335a && config.AutoUpload == sidekick.AutoUploadOnGameExit {
-		return watch.Trigger{OnExit: true}
+	for _, mode := range sidekick.AutoUploadCapabilities()[config.GameFormat] {
+		if mode == config.AutoUpload {
+			return watch.Trigger{OnExit: true}
+		}
 	}
 	return watch.Trigger{}
+}
+
+func (a *app) captureSidekickStorage(install wowdir.Install) bool {
+	config := a.store.Get().EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
+	return config.GameFormat.IncludesSidekickStorage()
 }
 
 func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, issues []sidekick.Issue, platform, appVersion string, startAtLogin bool) sidekick.Status {
