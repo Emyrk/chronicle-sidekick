@@ -220,6 +220,44 @@ func (e *Engine) removeHandledRPCRequests(install wowdir.Install) bool {
 	return true
 }
 
+func (e *Engine) clearAddonRequestState(install wowdir.Install) bool {
+	var removed []string
+	if err := e.cfg.Store.Update(func(s *store.State) {
+		for key, request := range s.AddonRequests {
+			if request.InstallDirectory == install.Dir {
+				delete(s.AddonRequests, key)
+				removed = append(removed, key)
+			}
+		}
+	}); err != nil {
+		e.cfg.Logger.Warn("clearing ChronicleCompanion request state", "install", install.Dir, "err", err)
+		return false
+	}
+	removedSet := make(map[string]struct{}, len(removed))
+	e.mu.Lock()
+	for _, key := range removed {
+		removedSet[key] = struct{}{}
+		delete(e.addonQueued, key)
+	}
+	for i := range e.pending {
+		if _, ok := removedSet[e.pending[i].addonRequestID]; ok {
+			e.pending[i].addonRequestID = ""
+		}
+	}
+	for i := range e.blocked {
+		if _, ok := removedSet[e.blocked[i].addonRequestID]; ok {
+			e.blocked[i].addonRequestID = ""
+		}
+	}
+	if e.current != nil {
+		if _, ok := removedSet[e.current.addonRequestID]; ok {
+			e.current.addonRequestID = ""
+		}
+	}
+	e.mu.Unlock()
+	return true
+}
+
 func (e *Engine) queueAddonRequest(key string, request store.AddonRequest, install wowdir.Install) error {
 	e.mu.Lock()
 	queued := e.addonQueued[key]

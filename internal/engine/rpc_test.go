@@ -89,8 +89,11 @@ func TestStepRemovesHandledRPCRequestsWhenWoWStops(t *testing.T) {
 	root := t.TempDir()
 	customData := filepath.Join(root, "CustomData")
 	require.NoError(t, os.MkdirAll(customData, 0o700))
+	const id = "Tester_Realm_1000_shutdown"
+	archiveName := "ChronicleUpload_" + id + ".txt"
+	require.NoError(t, os.WriteFile(filepath.Join(customData, archiveName), []byte("log\n"), 0o600))
 	requestsPath := filepath.Join(customData, rpcRequestsName)
-	require.NoError(t, os.WriteFile(requestsPath, nil, 0o600))
+	require.NoError(t, os.WriteFile(requestsPath, []byte("1\trequest\t"+id+"\t1000\t"+rpcUploadMethod+"\t"+archiveName+"\n"), 0o600))
 	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
 	require.NoError(t, err)
 	install := wowdir.Install{Dir: root, BaseURL: "https://chronicle.example"}
@@ -108,9 +111,23 @@ func TestStepRemovesHandledRPCRequestsWhenWoWStops(t *testing.T) {
 
 	e.step(ctx, time.Unix(1010, 0), false)
 	require.FileExists(t, requestsPath)
+	require.Len(t, st.Get().AddonRequests, 1)
+	require.Len(t, st.Get().ArchiveGroups, 1)
+	e.mu.Lock()
+	require.Len(t, e.pending, 1)
+	e.mu.Unlock()
+
 	running = false
 	e.step(ctx, time.Unix(1015, 0), false)
 	require.NoFileExists(t, requestsPath)
+	require.Empty(t, st.Get().AddonRequests)
+	require.Len(t, st.Get().ArchiveGroups, 1, "the normal upload flow remains durable")
+	e.mu.Lock()
+	require.Len(t, e.pending, 1, "the accepted upload remains queued")
+	require.Empty(t, e.pending[0].addonRequestID, "the job continues as a normal upload")
+	require.Empty(t, e.addonQueued)
+	require.Empty(t, e.addonCleanupPending)
+	e.mu.Unlock()
 }
 
 func TestRemoveHandledRPCRequests(t *testing.T) {
