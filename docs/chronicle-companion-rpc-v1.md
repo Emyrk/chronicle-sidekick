@@ -75,12 +75,16 @@ A suitable request ID is:
 
 ## Request journal
 
-ChronicleCompanion appends records to `ChronicleRPC.requests`. It does not
-truncate the file. Sidekick durably deduplicates accepted request IDs across
+ChronicleCompanion appends records to `ChronicleRPC.requests`. It never deletes
+or truncates the file. Sidekick durably deduplicates accepted request IDs across
 restarts.
 
 Sidekick ignores blank lines and malformed records. An unterminated final line
-is ignored until a later append completes it.
+is ignored until a later append completes it. When Sidekick detects that the
+corresponding WoW client has stopped, it performs one final drain and removes
+the request journal only after every valid request and retry record is durably
+represented in Sidekick state. Failed requests remain recoverable from that
+state when the addon starts again and appends a newer retry record.
 
 ### Upload request
 
@@ -198,8 +202,9 @@ RPC<TAB>1<TAB>0.16.0<TAB>1730000010<TAB>ready<TAB><LF>
 ```
 
 `heartbeat` is Unix seconds from the local machine. Sidekick scans requests and
-refreshes the snapshot on its five-second engine poll only when the corresponding
-configured Vanilla 1.12a client is running.
+refreshes the snapshot on its five-second engine poll while the corresponding
+configured Vanilla 1.12a client is running, then performs one final refresh when
+it detects that client has stopped.
 
 Initial readiness values are:
 

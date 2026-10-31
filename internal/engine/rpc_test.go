@@ -66,14 +66,99 @@ func TestParseRPCRequestsIgnoresPartialUnsupportedAndMalformedRecords(t *testing
 	require.Equal(t, time.Unix(1000, 0), requests[0].created)
 }
 
-func TestCompanionRPCInstallsRequiresEnabledAndRunning(t *testing.T) {
+func TestCompanionRPCInstallsSelectsRunningDrainAndCleanupSets(t *testing.T) {
 	t.Parallel()
-	installs := []wowdir.Install{{Dir: "running-1.12"}, {Dir: "stopped-1.12"}, {Dir: "running-other"}}
+	installs := []wowdir.Install{{Dir: "running-1.12"}, {Dir: "stopped-1.12"}, {Dir: "running-other"}, {Dir: "initially-stopped-1.12"}}
 	running := map[string]bool{"running-1.12": true, "stopped-1.12": false, "running-other": true}
+	seen := map[string]bool{"running-1.12": true, "stopped-1.12": true, "running-other": true}
+	previous := map[string]bool{"running-1.12": true, "stopped-1.12": true, "running-other": true}
 	enabled := func(install wowdir.Install) bool { return install.Dir != "running-other" }
 
-	require.Equal(t, installs[:1], companionRPCInstalls(installs, running, enabled))
-	require.Nil(t, companionRPCInstalls(installs, running, nil))
+	active, stopped, cleanup := companionRPCInstalls(installs, running, seen, previous, enabled)
+	require.Equal(t, installs[:1], active)
+	require.Equal(t, installs[1:2], stopped)
+	require.Equal(t, []wowdir.Install{installs[1], installs[3]}, cleanup)
+	active, stopped, cleanup = companionRPCInstalls(installs, running, seen, previous, nil)
+	require.Nil(t, active)
+	require.Nil(t, stopped)
+	require.Nil(t, cleanup)
+}
+
+func TestStepRemovesHandledRPCRequestsWhenWoWStops(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	customData := filepath.Join(root, "CustomData")
+	require.NoError(t, os.MkdirAll(customData, 0o700))
+	requestsPath := filepath.Join(customData, rpcRequestsName)
+	require.NoError(t, os.WriteFile(requestsPath, nil, 0o600))
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+	install := wowdir.Install{Dir: root, BaseURL: "https://chronicle.example"}
+	running := true
+	e := New(Config{
+		Store:          st,
+		Installs:       func() []wowdir.Install { return []wowdir.Install{install} },
+		CompanionRPC:   func(wowdir.Install) bool { return true },
+		RunningInstall: func(context.Context, wowdir.Install) bool { return running },
+		Token:          func() string { return "token" },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // The worker is not part of this synchronous lifecycle test.
+
+	e.step(ctx, time.Unix(1010, 0), false)
+	require.FileExists(t, requestsPath)
+	running = false
+	e.step(ctx, time.Unix(1015, 0), false)
+	require.NoFileExists(t, requestsPath)
+}
+
+func TestRemoveHandledRPCRequests(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		persisted   bool
+		lastRetryAt time.Time
+		wantRemoved bool
+	}{
+		{name: "handled request", persisted: true, wantRemoved: true},
+		{name: "handled retry", persisted: true, lastRetryAt: time.Unix(1020, 0), wantRemoved: true},
+		{name: "unhandled request", persisted: false, wantRemoved: false},
+		{name: "unhandled retry", persisted: true, lastRetryAt: time.Unix(1019, 0), wantRemoved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			customData := filepath.Join(root, "CustomData")
+			require.NoError(t, os.MkdirAll(customData, 0o700))
+			const id = "Tester_Realm_1000_cleanup"
+			action, created := "request", int64(1000)
+			if !tc.lastRetryAt.IsZero() {
+				action, created = "retry", 1020
+			}
+			archive := "ChronicleUpload_" + id + ".txt"
+			path := filepath.Join(customData, rpcRequestsName)
+			require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("1\t%s\t%s\t%d\t%s\t%s\n", action, id, created, rpcUploadMethod, archive)), 0o600))
+			st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+			require.NoError(t, err)
+			if tc.persisted {
+				require.NoError(t, st.Update(func(s *store.State) {
+					if s.AddonRequests == nil {
+						s.AddonRequests = map[string]store.AddonRequest{}
+					}
+					s.AddonRequests[addonRequestKey(root, id)] = store.AddonRequest{ID: id, LastRetryAt: tc.lastRetryAt}
+				}))
+			}
+			e := New(Config{Store: st, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+
+			require.Equal(t, tc.wantRemoved, e.removeHandledRPCRequests(wowdir.Install{Dir: root}))
+			if tc.wantRemoved {
+				require.NoFileExists(t, path)
+			} else {
+				require.FileExists(t, path)
+			}
+		})
+	}
 }
 
 func TestAddonRequestMovesIntoManagedArchiveAndPublishesStatus(t *testing.T) {

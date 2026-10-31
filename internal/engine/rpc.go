@@ -195,6 +195,31 @@ func (e *Engine) scanRPCRequests(ctx context.Context, now time.Time, installs []
 	}
 }
 
+func (e *Engine) removeHandledRPCRequests(install wowdir.Install) bool {
+	path := filepath.Join(install.Dir, "CustomData", rpcRequestsName)
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		e.cfg.Logger.Warn("reading ChronicleCompanion requests for cleanup", "install", install.Dir, "err", err)
+		return false
+	}
+	state := e.cfg.Store.Get()
+	for _, in := range parseRPCRequests(body) {
+		request, exists := state.AddonRequests[addonRequestKey(install.Dir, in.id)]
+		if !exists || (in.action == "retry" && request.LastRetryAt.Before(in.created)) {
+			return false
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		e.cfg.Logger.Warn("removing handled ChronicleCompanion requests", "install", install.Dir, "err", err)
+		return false
+	}
+	e.cfg.Logger.Info("removed handled ChronicleCompanion request journal", "install", install.Dir)
+	return true
+}
+
 func (e *Engine) queueAddonRequest(key string, request store.AddonRequest, install wowdir.Install) error {
 	e.mu.Lock()
 	queued := e.addonQueued[key]

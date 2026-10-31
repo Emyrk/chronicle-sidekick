@@ -385,17 +385,26 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
-func companionRPCInstalls(installs []wowdir.Install, running map[string]bool, enabled func(wowdir.Install) bool) []wowdir.Install {
+func companionRPCInstalls(installs []wowdir.Install, running, seen, previous map[string]bool, enabled func(wowdir.Install) bool) (active, stopped, cleanup []wowdir.Install) {
 	if enabled == nil {
-		return nil
+		return nil, nil, nil
 	}
-	var selected []wowdir.Install
 	for _, install := range installs {
-		if running[install.Dir] && enabled(install) {
-			selected = append(selected, install)
+		if !enabled(install) {
+			continue
+		}
+		dir := install.Dir
+		switch {
+		case running[dir]:
+			active = append(active, install)
+		case !seen[dir]:
+			cleanup = append(cleanup, install)
+		case previous[dir]:
+			stopped = append(stopped, install)
+			cleanup = append(cleanup, install)
 		}
 	}
-	return selected
+	return active, stopped, cleanup
 }
 
 func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
@@ -457,7 +466,14 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 			runningByDir[install.Dir] = running
 		}
 	}
-	e.scanRPCRequests(ctx, now, companionRPCInstalls(installs, runningByDir, e.cfg.CompanionRPC))
+	activeRPC, stoppedRPC, cleanupRPC := companionRPCInstalls(installs, runningByDir, e.installSeen, e.installRunning, e.cfg.CompanionRPC)
+	e.scanRPCRequests(ctx, now, activeRPC)
+	// Drain once after process exit so an append made just before shutdown is
+	// durable before the append-only journal is removed.
+	e.scanRPCRequests(ctx, now, stoppedRPC)
+	for _, install := range cleanupRPC {
+		e.removeHandledRPCRequests(install)
+	}
 	for _, f := range files {
 		if !e.watching[f.Path] {
 			if e.watching == nil {
