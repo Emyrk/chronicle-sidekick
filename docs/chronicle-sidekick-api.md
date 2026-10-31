@@ -84,7 +84,8 @@ Sidekick persists the `log_id` returned by the initial upload. If the same WoW
 installation starts again within 15 minutes of its previous exit, its next
 finalized combat log is appended to that `log_id`.
 
-For `wotlk_3.3.5a`, Sidekick sends two multipart parts when the SavedVariables
+For the `wotlk_3.3.5a` game format, Sidekick uploads with Chronicle parser
+format `3.3.5a-cc-addon` and sends two multipart parts when the SavedVariables
 file exists:
 
 - `combat_log`: gzip-compressed combat log, as today.

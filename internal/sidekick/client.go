@@ -60,6 +60,16 @@ const (
 	GameFormatWrath335a GameFormat = "wotlk_3.3.5a"
 )
 
+// UploadFormat returns the Chronicle parser format for this game format.
+func (f GameFormat) UploadFormat() string {
+	switch f {
+	case GameFormatWrath335a:
+		return "3.3.5a-cc-addon"
+	default:
+		return ""
+	}
+}
+
 // AutoUploadMode selects a Sidekick-owned upload trigger implementation.
 type AutoUploadMode string
 

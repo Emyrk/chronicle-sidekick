@@ -166,7 +166,7 @@ func run() error {
 				return upload.Result{}, err
 			}
 			c := upload.Client{
-				BaseURL: req.BaseURL, Token: token, Format: string(a.gameFormatForPath(req.Path)), Fast: req.Fast,
+				BaseURL: req.BaseURL, Token: token, Format: a.gameFormatForPath(req.Path).UploadFormat(), Fast: req.Fast,
 				SidekickStoragePath: req.SidekickStoragePath, AppendLogID: req.AppendLogID,
 				UploadID: req.UploadID, ChunkSequence: req.ChunkSequence,
 			}

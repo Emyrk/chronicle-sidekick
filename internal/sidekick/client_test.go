@@ -25,6 +25,12 @@ func TestHashConfig(t *testing.T) {
 	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", hash)
 }
 
+func TestGameFormatUploadFormat(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "3.3.5a-cc-addon", sidekick.GameFormatWrath335a.UploadFormat())
+	require.Empty(t, sidekick.GameFormat("future").UploadFormat())
+}
+
 func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
 	t.Parallel()
 	valid := sidekick.SidekickConfig{
