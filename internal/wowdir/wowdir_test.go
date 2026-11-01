@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
@@ -49,7 +50,7 @@ main|1|1.14.2.42597|wow_classic_era
 
 	got := wowdir.Detect([]string{root}, tenant.DefaultLayout)
 	require.Len(t, got, 1)
-	require.Equal(t, "classic_1.14.2", got[0].DetectedGameFormat)
+	require.Equal(t, logformat.LogFormatHermesproxy1142Cc, got[0].DetectedLogFormat)
 	require.Equal(t, "Kronos", got[0].Flavor)
 	require.Equal(t, "login2.twinstar-wow.com", got[0].Realmlist)
 	require.Equal(t, "https://kronos.chronicleclassic.com", got[0].BaseURL)
@@ -61,7 +62,7 @@ func TestDoesNotGuessClassicFormatFromFlavorMarker(t *testing.T) {
 
 	got := wowdir.Detect([]string{root}, tenant.DefaultLayout)
 	require.Len(t, got, 1)
-	require.Empty(t, got[0].DetectedGameFormat)
+	require.Empty(t, got[0].DetectedLogFormat)
 }
 
 func TestResolve(t *testing.T) {
@@ -106,18 +107,19 @@ func TestResolveLegacyClients(t *testing.T) {
 		realmlist  string
 		wantRealm  string
 		wantTenant string
+		wantFormat logformat.LogFormat
 		localized  bool
 	}{
-		{name: "octo ptr", realmlist: ` set realmlist "192.168.1.214"`, wantRealm: "192.168.1.214", wantTenant: "https://octoptr.chronicleclassic.com"},
-		{name: "octo hostname", realmlist: `SET realmlist "play.octowow.st"`, wantRealm: "play.octowow.st", wantTenant: "https://octo.chronicleclassic.com"},
-		{name: "octo ip", realmlist: "set realmlist 185.165.170.6", wantRealm: "185.165.170.6", wantTenant: "https://octo.chronicleclassic.com"},
-		{name: "capy", realmlist: "set realmlist apac.capycraft.io", wantRealm: "apac.capycraft.io", wantTenant: "https://capy.chronicleclassic.com"},
-		{name: "vanilla plus", realmlist: "set realmlist logon.vanillaplus.org", wantRealm: "logon.vanillaplus.org", wantTenant: "https://vanillaplus.chronicleclassic.com"},
-		{name: "kronos", realmlist: "set realmlist login3.twinstar-wow.com", wantRealm: "login3.twinstar-wow.com", wantTenant: "https://kronos.chronicleclassic.com"},
-		{name: "moonwell", realmlist: "set realmlist login.moonwell.su", wantRealm: "login.moonwell.su", wantTenant: "https://moonwell.chronicleclassic.com"},
-		{name: "crusader storm", realmlist: "set realmlist crusader-storm.com", wantRealm: "crusader-storm.com", wantTenant: "https://crusader-storm.chronicleclassic.com"},
-		{name: "chromiecraft localized", realmlist: "set realmlist logon.chromiecraft.com", wantRealm: "logon.chromiecraft.com", wantTenant: "https://chromie.chronicleclassic.com", localized: true},
-		{name: "warmane with port", realmlist: "set realmlist logon.warmane.com:3724", wantRealm: "logon.warmane.com", wantTenant: "https://warmane.chronicleclassic.com", localized: true},
+		{name: "octo ptr", realmlist: ` set realmlist "192.168.1.214"`, wantRealm: "192.168.1.214", wantTenant: "https://octoptr.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "octo hostname", realmlist: `SET realmlist "play.octowow.st"`, wantRealm: "play.octowow.st", wantTenant: "https://octo.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "octo ip", realmlist: "set realmlist 185.165.170.6", wantRealm: "185.165.170.6", wantTenant: "https://octo.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "capy", realmlist: "set realmlist apac.capycraft.io", wantRealm: "apac.capycraft.io", wantTenant: "https://capy.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "vanilla plus", realmlist: "set realmlist logon.vanillaplus.org", wantRealm: "logon.vanillaplus.org", wantTenant: "https://vanillaplus.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "kronos", realmlist: "set realmlist login3.twinstar-wow.com", wantRealm: "login3.twinstar-wow.com", wantTenant: "https://kronos.chronicleclassic.com", wantFormat: logformat.LogFormat112aCcAddon},
+		{name: "moonwell", realmlist: "set realmlist login.moonwell.su", wantRealm: "login.moonwell.su", wantTenant: "https://moonwell.chronicleclassic.com", wantFormat: logformat.LogFormat243CcAddon},
+		{name: "crusader storm", realmlist: "set realmlist crusader-storm.com", wantRealm: "crusader-storm.com", wantTenant: "https://crusader-storm.chronicleclassic.com", wantFormat: logformat.LogFormat243CcAddon},
+		{name: "chromiecraft localized", realmlist: "set realmlist logon.chromiecraft.com", wantRealm: "logon.chromiecraft.com", wantTenant: "https://chromie.chronicleclassic.com", wantFormat: logformat.LogFormat335aCcAddon, localized: true},
+		{name: "warmane with port", realmlist: "set realmlist logon.warmane.com:3724", wantRealm: "logon.warmane.com", wantTenant: "https://warmane.chronicleclassic.com", wantFormat: logformat.LogFormat335aCcAddon, localized: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,6 +136,7 @@ func TestResolveLegacyClients(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			require.Equal(t, tt.wantRealm, got[0].Realmlist)
+			require.Equal(t, tt.wantFormat, got[0].DetectedLogFormat)
 			require.Equal(t, tt.wantTenant, got[0].BaseURL)
 			require.Contains(t, got[0].LogGlobs, filepath.Join(root, "Logs", "WoWCombatLog.txt"))
 			require.Contains(t, got[0].LogGlobs, filepath.Join(root, "CustomData", "Chronicle_*.txt"))

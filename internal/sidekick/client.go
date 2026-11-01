@@ -14,21 +14,25 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 )
 
 const statusPath = "/api/v1/sidekick/status"
 
 // WoWDirectory is one configured World of Warcraft installation.
 type WoWDirectory struct {
-	ID            string     `json:"id"`
-	Path          string     `json:"path"`
-	TenantName    string     `json:"tenant_name"`
-	TenantBaseURL string     `json:"tenant_base_url"`
-	Realmlist     string     `json:"realmlist,omitempty"`
-	GameFormat    GameFormat `json:"game_format,omitempty"`
+	ID            string              `json:"id"`
+	Path          string              `json:"path"`
+	TenantName    string              `json:"tenant_name"`
+	TenantBaseURL string              `json:"tenant_base_url"`
+	Realmlist     string              `json:"realmlist,omitempty"`
+	LogFormat     logformat.LogFormat `json:"log_format,omitempty"`
+	Inspection    inspection.Report   `json:"inspection"`
 }
 
-// DirectoryID returns the opaque, stable-on-this-machine ID used in managed config.
+// DirectoryID returns the opaque, stable-on-this-machine ID used for local and managed settings.
 func DirectoryID(path string) string {
 	path = filepath.Clean(path)
 	if absolute, err := filepath.Abs(path); err == nil {
@@ -53,38 +57,6 @@ type Issue struct {
 
 const CurrentConfigVersion = 1
 
-// GameFormat identifies the combat-log dialect emitted by a WoW client.
-type GameFormat string
-
-const (
-	GameFormatVanilla112a GameFormat = "vanilla_1.12a"
-	GameFormatClassic1142 GameFormat = "classic_1.14.2"
-	GameFormatTBC243      GameFormat = "tbc_2.4.3"
-	GameFormatWrath335a   GameFormat = "wotlk_3.3.5a"
-)
-
-// UploadFormat returns the Chronicle parser format for this game format.
-func (f GameFormat) UploadFormat() string {
-	switch f {
-	case GameFormatVanilla112a:
-		return "1.12a-cc-addon"
-	case GameFormatClassic1142:
-		return "hermesproxy_1_14_2_cc"
-	case GameFormatTBC243:
-		return "2.4.3-cc-addon"
-	case GameFormatWrath335a:
-		return "3.3.5a-cc-addon"
-	default:
-		return ""
-	}
-}
-
-// IncludesSidekickStorage reports whether uploads include the optional
-// ChronicleSidekickBridge SavedVariables artifact.
-func (f GameFormat) IncludesSidekickStorage() bool {
-	return f == GameFormatWrath335a
-}
-
 // AutoUploadMode selects a Sidekick-owned upload trigger implementation.
 type AutoUploadMode string
 
@@ -95,7 +67,6 @@ const (
 
 // WoWDirectoryConfig is the server-managed behavior for one reported directory ID.
 type WoWDirectoryConfig struct {
-	GameFormat GameFormat     `json:"game_format"`
 	AutoUpload AutoUploadMode `json:"auto_upload"`
 }
 
@@ -122,12 +93,12 @@ func DefaultConfig() SidekickConfig {
 }
 
 // AutoUploadCapabilities lists the implementations in this Sidekick build.
-func AutoUploadCapabilities() map[GameFormat][]AutoUploadMode {
-	return map[GameFormat][]AutoUploadMode{
-		GameFormatVanilla112a: {AutoUploadOnGameExit},
-		GameFormatClassic1142: {AutoUploadOnGameExit},
-		GameFormatTBC243:      {AutoUploadOnGameExit},
-		GameFormatWrath335a:   {AutoUploadOnGameExit},
+func AutoUploadCapabilities() map[logformat.LogFormat][]AutoUploadMode {
+	return map[logformat.LogFormat][]AutoUploadMode{
+		logformat.LogFormat112aCcAddon:       {AutoUploadOnGameExit},
+		logformat.LogFormatHermesproxy1142Cc: {AutoUploadOnGameExit},
+		logformat.LogFormat243CcAddon:        {AutoUploadOnGameExit},
+		logformat.LogFormat335aCcAddon:       {AutoUploadOnGameExit},
 	}
 }
 
@@ -156,24 +127,9 @@ func (c SidekickConfig) Validate() error {
 	if c.Archive.Enabled && (c.Archive.RetentionDays < 1 || c.Archive.RetentionDays > 365) {
 		return fmt.Errorf("archive retention days must be between 1 and 365")
 	}
-	capabilities := AutoUploadCapabilities()
 	for id, directory := range c.WoWDirectories {
-		modes, ok := capabilities[directory.GameFormat]
-		if !ok {
-			return fmt.Errorf("directory %s has unsupported game format %q", id, directory.GameFormat)
-		}
-		if directory.AutoUpload == AutoUploadDisabled {
-			continue
-		}
-		supported := false
-		for _, mode := range modes {
-			if mode == directory.AutoUpload {
-				supported = true
-				break
-			}
-		}
-		if !supported {
-			return fmt.Errorf("directory %s has unsupported auto-upload mode %q for %q", id, directory.AutoUpload, directory.GameFormat)
+		if directory.AutoUpload != AutoUploadDisabled && directory.AutoUpload != AutoUploadOnGameExit {
+			return fmt.Errorf("directory %s has unsupported auto-upload mode %q", id, directory.AutoUpload)
 		}
 	}
 	return nil
@@ -185,10 +141,10 @@ type Status struct {
 	SidekickVersion string `json:"sidekick_version,omitempty"`
 	ConfigHash      string `json:"config_hash,omitempty"`
 	// StartAtLogin is observed local state. It is not server-managed config.
-	StartAtLogin           bool                            `json:"start_at_login"`
-	AutoUploadCapabilities map[GameFormat][]AutoUploadMode `json:"auto_upload_capabilities"`
-	WoWDirectories         []WoWDirectory                  `json:"wow_directories"`
-	Issues                 []Issue                         `json:"issues"`
+	StartAtLogin           bool                                     `json:"start_at_login"`
+	AutoUploadCapabilities map[logformat.LogFormat][]AutoUploadMode `json:"auto_upload_capabilities"`
+	WoWDirectories         []WoWDirectory                           `json:"wow_directories"`
+	Issues                 []Issue                                  `json:"issues"`
 }
 
 // UpdateResponse tells Sidekick which managed config Chronicle wants applied.

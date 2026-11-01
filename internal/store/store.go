@@ -13,6 +13,7 @@ import (
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
@@ -34,6 +35,9 @@ type State struct {
 	// WoWPaths are user-selected WoW folders. Multiple clients can be watched
 	// and routed independently by their realmlists.
 	WoWPaths []string `json:"wow_paths,omitempty"`
+	// WoWLogFormats are user-selected Chronicle parser formats by stable directory ID.
+	// Directories without an override use Sidekick's locally detected best guess.
+	WoWLogFormats map[string]logformat.LogFormat `json:"wow_log_formats,omitempty"`
 	// WoWPathsSet distinguishes an explicitly managed, possibly empty folder list
 	// from older state that should retain automatic-detection fallback behavior.
 	WoWPathsSet bool `json:"wow_paths_set,omitempty"`
@@ -60,7 +64,7 @@ type State struct {
 }
 
 // EffectiveConfig returns the valid config currently applied. Older state files
-// have no config, so they use the disabled default.
+// have no config, so they use the default configuration.
 func (s State) EffectiveConfig() sidekick.SidekickConfig {
 	if s.Config.Validate() == nil {
 		return s.Config
@@ -85,8 +89,11 @@ type ArchiveGroup struct {
 	// SourceKey distinguishes independently appended streams within one install,
 	// such as ChronicleCompanion's per-character 1.12a files.
 	SourceKey string `json:"source_key,omitempty"`
-	LogID     string `json:"log_id,omitempty"`
-	ReportURL string `json:"report_url,omitempty"`
+	// ManualUpload identifies groups created by an explicit in-game request.
+	// Automatic game-exit uploads must never append to these reports.
+	ManualUpload bool   `json:"manual_upload,omitempty"`
+	LogID        string `json:"log_id,omitempty"`
+	ReportURL    string `json:"report_url,omitempty"`
 	// UploadID and ChunkSequence identify append chunks. They are persisted
 	// before an append starts so retrying the same snapshot is idempotent.
 	UploadID      string    `json:"upload_id,omitempty"`
@@ -195,6 +202,10 @@ func (s *Store) Get() State {
 	defer s.mu.Unlock()
 	cp := s.st
 	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
+	cp.WoWLogFormats = make(map[string]logformat.LogFormat, len(s.st.WoWLogFormats))
+	for k, v := range s.st.WoWLogFormats {
+		cp.WoWLogFormats[k] = v
+	}
 	cp.AddonRequests = make(map[string]AddonRequest, len(s.st.AddonRequests))
 	for k, v := range s.st.AddonRequests {
 		v.Instances = append([]AddonInstance(nil), v.Instances...)

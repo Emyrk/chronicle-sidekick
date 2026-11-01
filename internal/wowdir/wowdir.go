@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
 
@@ -48,22 +49,21 @@ type Install struct {
 	BaseURL string
 	// Realmlist is the normalized host read from realmlist.wtf, when present.
 	Realmlist string
-	// DetectedGameFormat is a high-confidence client format inferred from local
-	// build metadata. Most legacy clients cannot be distinguished this way.
-	DetectedGameFormat string
+	// DetectedLogFormat is Sidekick's best local guess for the Chronicle parser.
+	DetectedLogFormat logformat.LogFormat
 }
 
 func foreverInstall(dir string) Install {
 	logDir := filepath.Join(dir, "Logs")
 	install := Install{
-		Flavor:             filepath.Base(dir),
-		Dir:                dir,
-		LogDir:             logDir,
-		LogGlobs:           WoWCombatLogGlobs(dir),
-		BaseURL:            tenant.ForeverBaseURL,
-		DetectedGameFormat: detectedGameFormat(dir),
+		Flavor:            filepath.Base(dir),
+		Dir:               dir,
+		LogDir:            logDir,
+		LogGlobs:          WoWCombatLogGlobs(dir),
+		BaseURL:           tenant.ForeverBaseURL,
+		DetectedLogFormat: detectedLogFormat(dir),
 	}
-	if install.DetectedGameFormat == "classic_1.14.2" {
+	if install.DetectedLogFormat == logformat.LogFormatHermesproxy1142Cc {
 		if host := readHermesProxyServer(dir); host != "" {
 			if realm, ok := tenant.ForRealm(host); ok {
 				install.Flavor = realm.Name
@@ -78,12 +78,13 @@ func foreverInstall(dir string) Install {
 func legacyInstall(dir, host string, realm tenant.Realm) Install {
 	logDir := filepath.Join(dir, "Logs")
 	return Install{
-		Flavor:    realm.Name,
-		Dir:       dir,
-		LogDir:    logDir,
-		LogGlobs:  append(WoWCombatLogGlobs(dir), ChronicleCustomLogGlobs(dir)...),
-		BaseURL:   realm.BaseURL,
-		Realmlist: host,
+		Flavor:            realm.Name,
+		Dir:               dir,
+		LogDir:            logDir,
+		LogGlobs:          append(WoWCombatLogGlobs(dir), ChronicleCustomLogGlobs(dir)...),
+		BaseURL:           realm.BaseURL,
+		Realmlist:         host,
+		DetectedLogFormat: realm.LogFormat,
 	}
 }
 
@@ -103,7 +104,7 @@ func ChronicleCustomLogGlobs(dir string) []string {
 
 const classic1142Build = "1.14.2.42597"
 
-func detectedGameFormat(dir string) string {
+func detectedLogFormat(dir string) logformat.LogFormat {
 	for _, buildInfo := range []string{
 		filepath.Join(dir, ".build.info"),
 		filepath.Join(filepath.Dir(dir), ".build.info"),
@@ -115,7 +116,7 @@ func detectedGameFormat(dir string) string {
 		version := readBuildInfoVersion(f)
 		_ = f.Close()
 		if version == classic1142Build {
-			return "classic_1.14.2"
+			return logformat.LogFormatHermesproxy1142Cc
 		}
 	}
 	return ""

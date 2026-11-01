@@ -497,6 +497,20 @@ func TestSelectAppendGroupUsesFifteenMinuteRestartWindowPerInstall(t *testing.T)
 	require.Equal(t, "other", group.ID)
 }
 
+func TestSelectAppendGroupExcludesManualUploadGroups(t *testing.T) {
+	t.Parallel()
+	exit := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	groups := map[string]store.ArchiveGroup{
+		"manual": {
+			ID: "manual", InstallDirectory: "/wow", SourceKey: "_jada.txt", ManualUpload: true,
+			LogID: "manual-log", LastExitAt: exit,
+		},
+	}
+
+	_, ok := engine.SelectAppendGroup(groups, "/wow", "_jada.txt", exit.Add(time.Minute))
+	require.False(t, ok)
+}
+
 func TestArchiveCombatPathUsesDeterministicCollisionSuffix(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 )
@@ -43,6 +44,7 @@ func TestArchiveGroupsRoundTripAndCopy(t *testing.T) {
 		InstallDirectory: "/wow",
 		InstallID:        "wowdir_1",
 		SourceKey:        "_thrall.txt",
+		ManualUpload:     true,
 		LogID:            "log-1",
 		ReportURL:        "https://x/logs/1",
 		UploadID:         "550e8400-e29b-41d4-a716-446655440000",
@@ -78,16 +80,20 @@ func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.Update(func(st *store.State) {
 		st.WoWPaths = []string{"/wow/capy", "/wow/warmane"}
+		st.WoWLogFormats = map[string]logformat.LogFormat{"capy": logformat.LogFormat112aCcAddon}
 		st.WoWPathsSet = true
 	}))
 
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, []string{"/wow/capy", "/wow/warmane"}, again.Get().WoWPaths)
+	require.Equal(t, logformat.LogFormat112aCcAddon, again.Get().WoWLogFormats["capy"])
 	require.True(t, again.Get().WoWPathsSet)
 	copy := again.Get()
 	copy.WoWPaths[0] = "/changed"
+	copy.WoWLogFormats["capy"] = logformat.LogFormat243CcAddon
 	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])
+	require.Equal(t, logformat.LogFormat112aCcAddon, again.Get().WoWLogFormats["capy"])
 }
 
 func TestIssuesRoundTripAndCopy(t *testing.T) {
@@ -111,7 +117,7 @@ func TestIssuesRoundTripAndCopy(t *testing.T) {
 	require.Equal(t, issues, again.Get().Issues)
 }
 
-func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
+func TestOldStateUsesDefaultConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"keep_log":true}`), 0o600))
@@ -135,7 +141,7 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 14},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			"dir": {AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
 	require.NoError(t, s.Update(func(st *store.State) {

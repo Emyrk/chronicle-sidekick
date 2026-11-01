@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 )
 
@@ -25,47 +26,21 @@ func TestHashConfig(t *testing.T) {
 	require.Equal(t, "03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4", hash)
 }
 
-func TestGameFormatUploadFormat(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, "1.12a-cc-addon", sidekick.GameFormatVanilla112a.UploadFormat())
-	require.Equal(t, "hermesproxy_1_14_2_cc", sidekick.GameFormatClassic1142.UploadFormat())
-	require.Equal(t, "2.4.3-cc-addon", sidekick.GameFormatTBC243.UploadFormat())
-	require.Equal(t, "3.3.5a-cc-addon", sidekick.GameFormatWrath335a.UploadFormat())
-	require.Empty(t, sidekick.GameFormat("future").UploadFormat())
-}
-
-func TestGameFormatSidekickStorage(t *testing.T) {
-	t.Parallel()
-	require.False(t, sidekick.GameFormatVanilla112a.IncludesSidekickStorage())
-	require.False(t, sidekick.GameFormatClassic1142.IncludesSidekickStorage())
-	require.False(t, sidekick.GameFormatTBC243.IncludesSidekickStorage())
-	require.True(t, sidekick.GameFormatWrath335a.IncludesSidekickStorage())
-	require.False(t, sidekick.GameFormat("future").IncludesSidekickStorage())
-}
-
-func TestConfigValidatesFormatAndAutoUploadMode(t *testing.T) {
+func TestConfigValidatesAutoUploadMode(t *testing.T) {
 	t.Parallel()
 	valid := sidekick.SidekickConfig{
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			"vanilla": {GameFormat: sidekick.GameFormatVanilla112a, AutoUpload: sidekick.AutoUploadOnGameExit},
-			"classic": {GameFormat: sidekick.GameFormatClassic1142, AutoUpload: sidekick.AutoUploadOnGameExit},
-			"tbc":     {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
-			"wrath":   {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			"vanilla":  {AutoUpload: sidekick.AutoUploadOnGameExit},
+			"disabled": {AutoUpload: sidekick.AutoUploadDisabled},
 		},
 	}
 	require.NoError(t, valid.Validate())
 
-	unknownFormat := valid
-	unknownFormat.WoWDirectories = map[string]sidekick.WoWDirectoryConfig{
-		"dir": {GameFormat: "future", AutoUpload: sidekick.AutoUploadOnGameExit},
-	}
-	require.ErrorContains(t, unknownFormat.Validate(), "unsupported game format")
-
 	unknownMode := valid
 	unknownMode.WoWDirectories = map[string]sidekick.WoWDirectoryConfig{
-		"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: "future"},
+		"dir": {AutoUpload: "future"},
 	}
 	require.ErrorContains(t, unknownMode.Validate(), "unsupported auto-upload mode")
 
@@ -112,7 +87,7 @@ func TestUpdate(t *testing.T) {
 				Version: sidekick.CurrentConfigVersion,
 				Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 30},
 				WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-					"wowdir_1": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+					"wowdir_1": {AutoUpload: sidekick.AutoUploadOnGameExit},
 				},
 			},
 		})
@@ -126,7 +101,7 @@ func TestUpdate(t *testing.T) {
 		WoWDirectories: []sidekick.WoWDirectory{{
 			ID: "wowdir_1", Path: `C:\\Games\\WoW`, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-			GameFormat: sidekick.GameFormatWrath335a,
+			LogFormat: logformat.LogFormat335aCcAddon,
 		}},
 		Issues: []sidekick.Issue{},
 	}
