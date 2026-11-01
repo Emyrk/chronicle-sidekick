@@ -89,8 +89,11 @@ type ArchiveGroup struct {
 	// SourceKey distinguishes independently appended streams within one install,
 	// such as ChronicleCompanion's per-character 1.12a files.
 	SourceKey string `json:"source_key,omitempty"`
-	LogID     string `json:"log_id,omitempty"`
-	ReportURL string `json:"report_url,omitempty"`
+	// ManualUpload identifies groups created by an explicit in-game request.
+	// Automatic game-exit uploads must never append to these reports.
+	ManualUpload bool   `json:"manual_upload,omitempty"`
+	LogID        string `json:"log_id,omitempty"`
+	ReportURL    string `json:"report_url,omitempty"`
 	// UploadID and ChunkSequence identify append chunks. They are persisted
 	// before an append starts so retrying the same snapshot is idempotent.
 	UploadID      string    `json:"upload_id,omitempty"`

@@ -207,6 +207,7 @@ func TestAddonRequestMovesIntoManagedArchiveAndPublishesStatus(t *testing.T) {
 	require.NotEmpty(t, request.ArchiveGroupID)
 	require.NoFileExists(t, source)
 	group := st.Get().ArchiveGroups[request.ArchiveGroupID]
+	require.True(t, group.ManualUpload)
 	require.Len(t, group.Files, 1)
 	require.FileExists(t, group.Files[0])
 	body, err := os.ReadFile(filepath.Join(customData, rpcStatusName))

@@ -869,7 +869,7 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 func selectAppendGroup(groups map[string]store.ArchiveGroup, installDir, sourceKey string, startedAt time.Time) (store.ArchiveGroup, bool) {
 	var best store.ArchiveGroup
 	for _, group := range groups {
-		if group.InstallDirectory != installDir || group.SourceKey != sourceKey || group.Pending || group.LogID == "" || group.LastExitAt.IsZero() || startedAt.IsZero() {
+		if group.ManualUpload || group.InstallDirectory != installDir || group.SourceKey != sourceKey || group.Pending || group.LogID == "" || group.LastExitAt.IsZero() || startedAt.IsZero() {
 			continue
 		}
 		restartedAfter := startedAt.Sub(group.LastExitAt)

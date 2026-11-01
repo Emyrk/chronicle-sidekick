@@ -44,6 +44,7 @@ func TestArchiveGroupsRoundTripAndCopy(t *testing.T) {
 		InstallDirectory: "/wow",
 		InstallID:        "wowdir_1",
 		SourceKey:        "_thrall.txt",
+		ManualUpload:     true,
 		LogID:            "log-1",
 		ReportURL:        "https://x/logs/1",
 		UploadID:         "550e8400-e29b-41d4-a716-446655440000",

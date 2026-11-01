@@ -124,7 +124,7 @@ func (e *Engine) scanRPCRequests(ctx context.Context, now time.Time, installs []
 				}
 				group := store.ArchiveGroup{
 					ID: groupID, InstallDirectory: install.Dir, InstallID: sidekick.DirectoryID(install.Dir),
-					SourceKey: "addon:" + in.id, CreatedAt: in.created, Pending: true, Files: []string{archivePath},
+					SourceKey: "addon:" + in.id, ManualUpload: true, CreatedAt: in.created, Pending: true, Files: []string{archivePath},
 				}
 				if err := e.cfg.Store.Update(func(s *store.State) {
 					if s.AddonRequests == nil {
