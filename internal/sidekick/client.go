@@ -14,18 +14,21 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
 )
 
 const statusPath = "/api/v1/sidekick/status"
 
 // WoWDirectory is one configured World of Warcraft installation.
 type WoWDirectory struct {
-	ID            string     `json:"id"`
-	Path          string     `json:"path"`
-	TenantName    string     `json:"tenant_name"`
-	TenantBaseURL string     `json:"tenant_base_url"`
-	Realmlist     string     `json:"realmlist,omitempty"`
-	GameFormat    GameFormat `json:"game_format,omitempty"`
+	ID            string            `json:"id"`
+	Path          string            `json:"path"`
+	TenantName    string            `json:"tenant_name"`
+	TenantBaseURL string            `json:"tenant_base_url"`
+	Realmlist     string            `json:"realmlist,omitempty"`
+	GameFormat    GameFormat        `json:"game_format,omitempty"`
+	Inspection    inspection.Report `json:"inspection"`
 }
 
 // DirectoryID returns the opaque, stable-on-this-machine ID used in managed config.

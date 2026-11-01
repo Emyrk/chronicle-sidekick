@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
@@ -325,9 +326,11 @@ func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, i
 			name = install.BaseURL
 		}
 		id := sidekick.DirectoryID(install.Dir)
+		gameFormat := gameFormatForInstall(install, config)
 		directories = append(directories, sidekick.WoWDirectory{
 			ID: id, Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL,
-			Realmlist: install.Realmlist, GameFormat: gameFormatForInstall(install, config),
+			Realmlist: install.Realmlist, GameFormat: gameFormat,
+			Inspection: inspection.Inspect(install.Dir, string(gameFormat)),
 		})
 	}
 	return sidekick.Status{

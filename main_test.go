@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
@@ -88,9 +89,37 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 			ID: id, Path: dir, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
 			GameFormat: sidekick.GameFormatWrath335a,
+			Inspection: inspection.Report{
+				Status: inspection.StatusActionRequired,
+				Checks: []inspection.Check{{
+					ID: "addon.chronicle_companion_wotlk", Category: inspection.CategoryAddon,
+					Name: "ChronicleCompanionWoTLK", Required: true, Status: inspection.CheckMissing,
+				}},
+			},
 		}},
 		Issues: issues,
 	}, status)
+}
+
+func TestSidekickStatusIncludesInspection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "Interface", "AddOns", "ChronicleCompanionTBC"), 0o755))
+	id := sidekick.DirectoryID(dir)
+	config := sidekick.DefaultConfig()
+	config.WoWDirectories[id] = sidekick.WoWDirectoryConfig{GameFormat: sidekick.GameFormatTBC243}
+
+	status := sidekickStatus([]wowdir.Install{{
+		Flavor: "Moonwell", Dir: dir, BaseURL: "https://moonwell.chronicleclassic.com",
+	}}, config, nil, "windows/amd64", "1.2.3", false)
+
+	require.Equal(t, inspection.Report{
+		Status: inspection.StatusReady,
+		Checks: []inspection.Check{{
+			ID: "addon.chronicle_companion_tbc", Category: inspection.CategoryAddon,
+			Name: "ChronicleCompanionTBC", Required: true, Status: inspection.CheckPresent,
+		}},
+	}, status.WoWDirectories[0].Inspection)
 }
 
 func TestSidekickStatusUsesEmptyRequiredCollections(t *testing.T) {

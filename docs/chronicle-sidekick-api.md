@@ -52,6 +52,62 @@ ignored. Chronicle should return `settings_url` on every successful heartbeat,
 including responses where managed configuration is unchanged, so the tray's
 **View Settings…** action remains available.
 
+## WoW directory inspection
+
+Each reported WoW directory includes a fresh inspection of the allowlisted addons
+and DLLs expected for its configured or detected game format. Sidekick sends the
+inspection on every heartbeat so Chronicle can replace stale results.
+
+```json
+{
+  "id": "wowdir_<sha256>",
+  "path": "C:\\Games\\World of Warcraft",
+  "tenant_name": "OctoPTR",
+  "tenant_base_url": "https://octoptr.chronicleclassic.com",
+  "realmlist": "192.168.1.214",
+  "game_format": "vanilla_1.12a",
+  "inspection": {
+    "status": "action_required",
+    "checks": [
+      {
+        "id": "addon.chronicle_companion",
+        "category": "addon",
+        "name": "ChronicleCompanion",
+        "required": true,
+        "status": "missing"
+      },
+      {
+        "id": "dll.nampower",
+        "category": "dll",
+        "name": "nampower.dll",
+        "required": true,
+        "status": "present"
+      }
+    ]
+  }
+}
+```
+
+Inspection status is `ready` when every required component is present,
+`action_required` when at least one required component is missing, and `unknown`
+when Sidekick does not know the directory's game format. Check status is
+`present` or `missing`. Missing optional components do not make the directory
+require action.
+
+The current profiles are:
+
+| Game format | Required | Optional |
+| --- | --- | --- |
+| `vanilla_1.12a` | `ChronicleCompanion`, `nampower.dll` | `ClassicAPI.dll`, `SuperWoWhook.dll` |
+| `classic_1.14.2` | `ChronicleCompanionJimsProxy` | — |
+| `tbc_2.4.3` | `ChronicleCompanionTBC` | — |
+| `wotlk_3.3.5a` | `ChronicleCompanionWoTLK` | — |
+
+Addon checks look for directories under `Interface/AddOns`. DLL checks look for
+regular files in the WoW installation root. Names are matched case-insensitively.
+Sidekick does not enumerate or report arbitrary addons, DLLs, file contents, or
+component versions.
+
 ## Reported issues
 
 Each heartbeat replaces the installation's complete `issues` snapshot. Sidekick
