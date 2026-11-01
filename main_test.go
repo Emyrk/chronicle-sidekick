@@ -181,6 +181,40 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 	require.Equal(t, logformat.LogFormat335aCcAddon, a.logFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
+func TestAutoUploadTriggerDefaultsToOnGameExit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := fakeLegacyInstall(t, root, "Capy", "apac.capycraft.io")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	directoryID := sidekick.DirectoryID(dir)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWPaths = []string{dir}
+		s.WoWPathsSet = true
+		s.WoWLogFormats = map[string]logformat.LogFormat{directoryID: logformat.LogFormat112aCcAddon}
+	}))
+	a := &app{store: st, layout: tenant.DefaultLayout}
+
+	require.True(t, a.autoUploadTrigger(wowdir.Install{Dir: dir}).OnExit)
+}
+
+func TestAutoUploadTriggerHonorsExplicitDisabledConfig(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := fakeLegacyInstall(t, root, "Capy", "apac.capycraft.io")
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	directoryID := sidekick.DirectoryID(dir)
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWLogFormats = map[string]logformat.LogFormat{directoryID: logformat.LogFormat112aCcAddon}
+		s.Config = sidekick.DefaultConfig()
+		s.Config.WoWDirectories[directoryID] = sidekick.WoWDirectoryConfig{AutoUpload: sidekick.AutoUploadDisabled}
+	}))
+	a := &app{store: st, layout: tenant.DefaultLayout}
+
+	require.False(t, a.autoUploadTrigger(wowdir.Install{Dir: dir}).OnExit)
+}
+
 func TestTBCConfigEnablesExitUploadWithoutSidekickStorage(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

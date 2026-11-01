@@ -64,7 +64,7 @@ type State struct {
 }
 
 // EffectiveConfig returns the valid config currently applied. Older state files
-// have no config, so they use the disabled default.
+// have no config, so they use the default configuration.
 func (s State) EffectiveConfig() sidekick.SidekickConfig {
 	if s.Config.Validate() == nil {
 		return s.Config

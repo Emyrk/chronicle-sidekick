@@ -288,13 +288,16 @@ func (a *app) companionRPCEnabled(install wowdir.Install) bool {
 
 func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 	state := a.store.Get()
-	config, ok := state.EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
-	if !ok || config.AutoUpload != sidekick.AutoUploadOnGameExit {
+	mode := sidekick.AutoUploadOnGameExit
+	if config, ok := state.EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]; ok {
+		mode = config.AutoUpload
+	}
+	if mode != sidekick.AutoUploadOnGameExit {
 		return watch.Trigger{}
 	}
 	format := logFormatForInstall(install, state.WoWLogFormats)
-	for _, mode := range sidekick.AutoUploadCapabilities()[format] {
-		if mode == config.AutoUpload {
+	for _, supported := range sidekick.AutoUploadCapabilities()[format] {
+		if supported == mode {
 			return watch.Trigger{OnExit: true}
 		}
 	}

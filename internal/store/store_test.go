@@ -116,7 +116,7 @@ func TestIssuesRoundTripAndCopy(t *testing.T) {
 	require.Equal(t, issues, again.Get().Issues)
 }
 
-func TestOldStateDefaultsAutoUploadOff(t *testing.T) {
+func TestOldStateUsesDefaultConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"keep_log":true}`), 0o600))

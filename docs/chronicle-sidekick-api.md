@@ -26,6 +26,11 @@ The canonical empty-directory configuration above has SHA-256:
 03ba74a583c3e096527eb448a456583b975a0f8c32d8517c630ff3954e3528e4
 ```
 
+Automatic upload defaults to `on_game_exit` for a reported WoW directory when
+Chronicle has not supplied a directory-specific setting. Chronicle can explicitly
+set `auto_upload` to `disabled` to turn it off. Sidekick only enables the default
+when the directory's selected log format advertises support for that trigger.
+
 ## Status response
 
 `PUT /api/v1/sidekick/status` may return a same-origin settings link alongside
