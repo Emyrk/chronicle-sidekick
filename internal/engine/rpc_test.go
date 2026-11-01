@@ -106,6 +106,7 @@ func TestStepRemovesHandledRPCRequestsWhenWoWStops(t *testing.T) {
 		Token:          func() string { return "token" },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	e.workerOnce.Do(func() {}) // This test drives lifecycle steps synchronously.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // The worker is not part of this synchronous lifecycle test.
 
@@ -519,5 +520,5 @@ func TestRPCFailedReparseConsumesRetryRecord(t *testing.T) {
 	require.Equal(t, 1, calls)
 	request := st.Get().AddonRequests[key]
 	require.Equal(t, "failed", request.State)
-	require.Equal(t, time.Unix(1020, 0), request.LastRetryAt)
+	require.Equal(t, int64(1020), request.LastRetryAt.Unix())
 }
