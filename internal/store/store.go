@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -48,6 +49,10 @@ type State struct {
 	// keyed by path and forgotten when the file is renamed or moved, the ledger
 	// is what keeps a log the server already has from being sent again.
 	Logs map[string]Log `json:"logs,omitempty"`
+	// AddonRequests are ChronicleCompanion RPC requests accepted from configured
+	// WoW installations. They are persisted before the addon is acknowledged so
+	// duplicate request records and Sidekick restarts are idempotent.
+	AddonRequests map[string]AddonRequest `json:"addon_requests,omitempty"`
 	// Issues are currently active, sanitized problems reported to Chronicle.
 	Issues []sidekick.Issue `json:"issues,omitempty"`
 	// LastReportURL is the most recent report, for the tray menu.
@@ -92,6 +97,30 @@ type ArchiveGroup struct {
 	DeleteAfter   time.Time `json:"delete_after,omitempty"`
 	Pending       bool      `json:"pending,omitempty"`
 	Files         []string  `json:"files,omitempty"`
+}
+
+// AddonRequest is one durable ChronicleCompanion RPC request.
+type AddonRequest struct {
+	ID               string          `json:"id"`
+	Method           string          `json:"method,omitempty"`
+	InstallDirectory string          `json:"install_directory"`
+	ArchiveBasename  string          `json:"archive_basename"`
+	ArchiveGroupID   string          `json:"archive_group_id,omitempty"`
+	State            string          `json:"state"`
+	Message          string          `json:"message,omitempty"`
+	LogID            string          `json:"log_id,omitempty"`
+	ReportURL        string          `json:"report_url,omitempty"`
+	Instances        []AddonInstance `json:"instances,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	LastRetryAt      time.Time       `json:"last_retry_at,omitempty"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// AddonInstance is one parsed Chronicle instance published to the addon.
+type AddonInstance struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // Log is one entry of the upload ledger.
@@ -166,6 +195,11 @@ func (s *Store) Get() State {
 	defer s.mu.Unlock()
 	cp := s.st
 	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
+	cp.AddonRequests = make(map[string]AddonRequest, len(s.st.AddonRequests))
+	for k, v := range s.st.AddonRequests {
+		v.Instances = append([]AddonInstance(nil), v.Instances...)
+		cp.AddonRequests[k] = v
+	}
 	cp.Issues = append([]sidekick.Issue(nil), s.st.Issues...)
 	cp.ArchiveGroups = make(map[string]ArchiveGroup, len(s.st.ArchiveGroups))
 	for k, v := range s.st.ArchiveGroups {
@@ -183,12 +217,22 @@ func (s *Store) Get() State {
 	return cp
 }
 
-// Update applies fn and saves.
+// Update applies fn and saves. The in-memory state changes only after the
+// replacement file is durable enough to rename, so callers never observe an
+// update that returned an error as committed.
 func (s *Store) Update(fn func(*State)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fn(&s.st)
-	b, err := json.MarshalIndent(s.st, "", "  ")
+	before, err := json.Marshal(s.st)
+	if err != nil {
+		return err
+	}
+	var next State
+	if err := json.Unmarshal(before, &next); err != nil {
+		return err
+	}
+	fn(&next)
+	b, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -196,10 +240,34 @@ func (s *Store) Update(fn func(*State)) error {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	s.st = next
+	// Persist the directory entry as well on platforms that support syncing
+	// directories. Windows rename durability is handled by the filesystem API.
+	if runtime.GOOS != "windows" {
+		if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
+			_ = dir.Sync()
+			_ = dir.Close()
+		}
+	}
+	return nil
 }
 
 // LoadToken reads OAuth credentials from the OS keychain. Raw bearer tokens

@@ -175,3 +175,18 @@ func TestLedgerDropsTheOldest(t *testing.T) {
 	require.NotContains(t, logs, "chr1-1-0")
 	require.Contains(t, logs, fmt.Sprintf("chr1-1-%d", store.LedgerMax+4))
 }
+
+func TestUpdateFailureDoesNotMutateMemory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	blocker := filepath.Join(root, "not-a-directory")
+	s, err := store.Open(filepath.Join(blocker, "state.json"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+
+	err = s.Update(func(st *store.State) {
+		st.WoWPaths = []string{"/should/not/commit"}
+	})
+	require.Error(t, err)
+	require.Empty(t, s.Get().WoWPaths)
+}

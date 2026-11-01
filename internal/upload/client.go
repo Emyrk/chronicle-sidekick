@@ -120,6 +120,20 @@ type Result struct {
 	Duplicate bool
 }
 
+// ProcessingResult is Chronicle's current parser result for an uploaded log.
+type ProcessingResult struct {
+	State     string
+	Message   string
+	Instances []Instance
+}
+
+// Instance is one parsed raid instance belonging to an uploaded log.
+type Instance struct {
+	ID   string
+	Name string
+	URL  string
+}
+
 // Client uploads logs.
 type Client struct {
 	// BaseURL is the tenant's Chronicle site.
@@ -254,6 +268,124 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 		msg = http.StatusText(resp.StatusCode)
 	}
 	return Result{}, &Error{Status: resp.StatusCode, Message: msg, Detail: out.Detail}
+}
+
+type processingResponse struct {
+	Status struct {
+		State  string          `json:"state"`
+		Output json.RawMessage `json:"output"`
+	} `json:"status"`
+}
+
+type processingOutput struct {
+	Instances []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	} `json:"instances"`
+}
+
+// Reprocess asks Chronicle to retry parsing a previously uploaded log group.
+func (c *Client) Reprocess(ctx context.Context, logID string) error {
+	if c.Token == "" {
+		return ErrUnauthorized
+	}
+	if _, err := uuid.Parse(logID); err != nil {
+		return fmt.Errorf("invalid log ID: %w", err)
+	}
+	endpoint := strings.TrimRight(c.BaseURL, "/") + "/api/v1/raidlogs/logs/" + url.PathEscape(logID) + "/reparse"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	httpc := c.HTTP
+	if httpc == nil {
+		httpc = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		return &Error{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
+	}
+	return nil
+}
+
+// Processing fetches the actual Chronicle parse state and parsed instances for
+// a previously uploaded log group.
+func (c *Client) Processing(ctx context.Context, logID string) (ProcessingResult, error) {
+	if c.Token == "" {
+		return ProcessingResult{}, ErrUnauthorized
+	}
+	if _, err := uuid.Parse(logID); err != nil {
+		return ProcessingResult{}, fmt.Errorf("invalid log ID: %w", err)
+	}
+	endpoint := strings.TrimRight(c.BaseURL, "/") + "/api/v1/raidlogs/logs/" + url.PathEscape(logID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ProcessingResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	httpc := c.HTTP
+	if httpc == nil {
+		httpc = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return ProcessingResult{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ProcessingResult{}, ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ProcessingResult{}, &Error{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
+	}
+	var state processingResponse
+	if err := json.Unmarshal(body, &state); err != nil {
+		return ProcessingResult{}, fmt.Errorf("decode processing status: %w", err)
+	}
+	result := ProcessingResult{State: "processing"}
+	var output processingOutput
+	if len(state.Status.Output) > 0 && string(state.Status.Output) != "null" {
+		if err := json.Unmarshal(state.Status.Output, &output); err != nil {
+			return ProcessingResult{}, fmt.Errorf("decode processing output: %w", err)
+		}
+	}
+	switch state.Status.State {
+	case "completed":
+		result.State = "complete"
+	case "discarded":
+		// Chronicle uses discarded with reconstructed output when old completed
+		// River jobs have been pruned.
+		if len(output.Instances) > 0 {
+			result.State = "complete"
+		} else {
+			result.State = "failed"
+		}
+	case "cancelled":
+		result.State = "failed"
+	}
+	for _, instance := range output.Instances {
+		if instance.ID == "" || instance.Name == "" || instance.Slug == "" {
+			continue
+		}
+		result.Instances = append(result.Instances, Instance{
+			ID: instance.ID, Name: instance.Name,
+			URL: c.abs("/instances/" + url.PathEscape(instance.Slug)),
+		})
+	}
+	if result.State == "failed" {
+		result.Message = "Chronicle could not process this log."
+	}
+	return result, nil
 }
 
 type sourceResponse struct {

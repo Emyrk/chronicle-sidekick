@@ -161,6 +161,7 @@ func run() error {
 		AutoUpload:             a.autoUploadTrigger,
 		CaptureSidekickStorage: a.captureSidekickStorage,
 		AppendGroupKey:         a.appendGroupKey,
+		CompanionRPC:           a.companionRPCEnabled,
 		Token:                  a.cachedToken,
 		Upload: func(ctx context.Context, _ string, req engine.UploadRequest) (upload.Result, error) {
 			token, err := a.accessToken(ctx)
@@ -179,6 +180,22 @@ func run() error {
 			}
 			return c.Upload(ctx, req.Path, req.SourceID, req.Size)
 		},
+		Reprocess: func(ctx context.Context, _ string, baseURL, logID string) error {
+			token, err := a.accessToken(ctx)
+			if err != nil {
+				return err
+			}
+			c := upload.Client{BaseURL: baseURL, Token: token}
+			return c.Reprocess(ctx, logID)
+		},
+		Processing: func(ctx context.Context, _ string, baseURL, logID string) (upload.ProcessingResult, error) {
+			token, err := a.accessToken(ctx)
+			if err != nil {
+				return upload.ProcessingResult{}, err
+			}
+			c := upload.Client{BaseURL: baseURL, Token: token}
+			return c.Processing(ctx, logID)
+		},
 		// Lookup is the pre-flight check for a log this machine's ledger has
 		// never seen. A server without the route answers 404, which reads as
 		// "has nothing", and the log is uploaded as before.
@@ -194,6 +211,7 @@ func run() error {
 		RunningInstall: runningInstall,
 		Notify:         notify,
 		OnStatus:       a.onStatus,
+		Version:        version,
 		Logger:         logger,
 	})
 	if !*stateDebug {
@@ -260,6 +278,10 @@ func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
 		return gameFormatForInstall(install, config)
 	}
 	return ""
+}
+
+func (a *app) companionRPCEnabled(install wowdir.Install) bool {
+	return gameFormatForInstall(install, a.store.Get().EffectiveConfig()) == sidekick.GameFormatVanilla112a
 }
 
 func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {

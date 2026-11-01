@@ -370,3 +370,69 @@ func TestHave(t *testing.T) {
 		require.Empty(t, req.URL, "neither case reaches the server")
 	})
 }
+
+func TestProcessing(t *testing.T) {
+	t.Parallel()
+	const logID = "550e8400-e29b-41d4-a716-446655440000"
+	t.Run("processing", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "/api/v1/raidlogs/logs/"+logID, r.URL.Path)
+			require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"status":{"state":"running"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		result, err := (&upload.Client{BaseURL: srv.URL, Token: "tok"}).Processing(context.Background(), logID)
+		require.NoError(t, err)
+		require.Equal(t, "processing", result.State)
+	})
+	t.Run("completed instances", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"status":{"state":"completed","output":{"instances":[{"id":"11111111-1111-1111-1111-111111111111","name":"Molten Core","slug":"molten-core-abc"},{"id":"22222222-2222-2222-2222-222222222222","name":"Blackwing Lair","slug":"blackwing-lair-def"}]}}}`))
+		}))
+		t.Cleanup(srv.Close)
+		result, err := (&upload.Client{BaseURL: srv.URL, Token: "tok"}).Processing(context.Background(), logID)
+		require.NoError(t, err)
+		require.Equal(t, "complete", result.State)
+		require.Equal(t, []upload.Instance{
+			{ID: "11111111-1111-1111-1111-111111111111", Name: "Molten Core", URL: srv.URL + "/instances/molten-core-abc"},
+			{ID: "22222222-2222-2222-2222-222222222222", Name: "Blackwing Lair", URL: srv.URL + "/instances/blackwing-lair-def"},
+		}, result.Instances)
+	})
+	t.Run("discarded with reconstructed output", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"status":{"state":"discarded","output":{"instances":[{"id":"11111111-1111-1111-1111-111111111111","name":"Molten Core","slug":"molten-core-abc"}]}}}`))
+		}))
+		t.Cleanup(srv.Close)
+		result, err := (&upload.Client{BaseURL: srv.URL, Token: "tok"}).Processing(context.Background(), logID)
+		require.NoError(t, err)
+		require.Equal(t, "complete", result.State)
+		require.Len(t, result.Instances, 1)
+	})
+	t.Run("discarded", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"status":{"state":"discarded","errors":[{"error":"parser failed"}]}}`))
+		}))
+		t.Cleanup(srv.Close)
+		result, err := (&upload.Client{BaseURL: srv.URL, Token: "tok"}).Processing(context.Background(), logID)
+		require.NoError(t, err)
+		require.Equal(t, "failed", result.State)
+		require.Equal(t, "Chronicle could not process this log.", result.Message)
+	})
+}
+
+func TestReprocess(t *testing.T) {
+	t.Parallel()
+	const logID = "550e8400-e29b-41d4-a716-446655440000"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/api/v1/raidlogs/logs/"+logID+"/reparse", r.URL.Path)
+		require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	require.NoError(t, (&upload.Client{BaseURL: srv.URL, Token: "tok"}).Reprocess(context.Background(), logID))
+}

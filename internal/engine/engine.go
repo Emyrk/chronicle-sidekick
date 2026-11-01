@@ -70,12 +70,19 @@ type Config struct {
 	// AppendGroupKey identifies an independently appended stream within one
 	// install. Empty keeps the install-wide grouping used by standard clients.
 	AppendGroupKey func(wowdir.Install, string) string
+	// CompanionRPC reports whether this install supports ChronicleCompanion's
+	// local file RPC. The engine scans enabled installs only while they are running.
+	CompanionRPC func(wowdir.Install) bool
 	// Token reads the bearer token from the keychain. It is cached; call
 	// Engine.TokenChanged after storing or removing one.
 	Token func() string
 	// Upload sends one immutable archived snapshot. Fast asks for the cheapest
 	// compression; it is set while WoW is running so the game never competes for CPU.
 	Upload func(ctx context.Context, token string, req UploadRequest) (upload.Result, error)
+	// Reprocess retries Chronicle parsing for an uploaded addon request.
+	Reprocess func(ctx context.Context, token, baseURL, logID string) error
+	// Processing returns Chronicle's parser state for an addon-request upload.
+	Processing func(ctx context.Context, token, baseURL, logID string) (upload.ProcessingResult, error)
 	// Lookup asks the selected tenant what it has of sourceID before a body is sent.
 	// It is only called for a log the ledger has never seen (fresh install,
 	// wiped state file, second machine). nil disables the pre-flight check: an
@@ -92,6 +99,8 @@ type Config struct {
 	// OnStatus is called when the status changes.
 	OnStatus func(Status)
 	Logger   *slog.Logger
+	// Version is written to ChronicleCompanion's local RPC heartbeat.
+	Version string
 
 	Poll      time.Duration // default 5s
 	IdleAfter time.Duration // default 5m
@@ -141,16 +150,18 @@ type Engine struct {
 
 	// mu guards everything the poll loop and the upload worker share: tracker,
 	// status and the fields the worker reads (token, wowUp, now, ...).
-	mu             sync.Mutex
-	pending        []job
-	blocked        []job // immutable snapshots waiting for a refreshed token
-	current        *job
-	kick           chan struct{} // wakes the worker when pending grows
-	workerOnce     sync.Once
-	installRunning map[string]bool
-	installSeen    map[string]bool
-	installStarted map[string]time.Time
-	installExited  map[string]time.Time
+	mu                  sync.Mutex
+	pending             []job
+	blocked             []job // immutable snapshots waiting for a refreshed token
+	current             *job
+	kick                chan struct{} // wakes the worker when pending grows
+	workerOnce          sync.Once
+	installRunning      map[string]bool
+	installSeen         map[string]bool
+	installStarted      map[string]time.Time
+	addonQueued         map[string]bool
+	addonCleanupPending map[string]bool
+	installExited       map[string]time.Time
 }
 
 type uploadRequest struct {
@@ -160,21 +171,22 @@ type uploadRequest struct {
 
 // job is one log waiting to be (or being) uploaded.
 type job struct {
-	path          string
-	size          int64
-	baseURL       string
-	install       wowdir.Install
-	running       bool
-	startedAt     time.Time
-	exitedAt      time.Time
-	queuedAt      time.Time
-	snapshotPath  string
-	storagePath   string
-	groupID       string
-	appendLogID   string
-	uploadID      string
-	sequence      int
-	sourceRemoved bool
+	path           string
+	size           int64
+	baseURL        string
+	install        wowdir.Install
+	running        bool
+	startedAt      time.Time
+	exitedAt       time.Time
+	queuedAt       time.Time
+	snapshotPath   string
+	storagePath    string
+	groupID        string
+	appendLogID    string
+	uploadID       string
+	sequence       int
+	addonRequestID string
+	sourceRemoved  bool
 }
 
 const exitFinalizeAfter = 30 * time.Second
@@ -204,16 +216,18 @@ func New(cfg Config) *Engine {
 	}
 	st := pruneUploaded(cfg.Store, cfg.Logger)
 	e := &Engine{
-		cfg:            cfg,
-		tracker:        watch.NewTracker(st.Uploaded),
-		manual:         make(chan uploadRequest, 1),
-		wake:           make(chan struct{}, 1),
-		kick:           make(chan struct{}, 1),
-		status:         Status{ReportURL: st.LastReportURL},
-		installRunning: map[string]bool{},
-		installSeen:    map[string]bool{},
-		installStarted: map[string]time.Time{},
-		installExited:  map[string]time.Time{},
+		cfg:                 cfg,
+		tracker:             watch.NewTracker(st.Uploaded),
+		manual:              make(chan uploadRequest, 1),
+		wake:                make(chan struct{}, 1),
+		kick:                make(chan struct{}, 1),
+		status:              Status{ReportURL: st.LastReportURL},
+		installRunning:      map[string]bool{},
+		installSeen:         map[string]bool{},
+		installStarted:      map[string]time.Time{},
+		addonQueued:         map[string]bool{},
+		addonCleanupPending: map[string]bool{},
+		installExited:       map[string]time.Time{},
 		wait: func(ctx context.Context, d time.Duration) {
 			t := time.NewTimer(d)
 			defer t.Stop()
@@ -231,9 +245,15 @@ func (e *Engine) restorePendingArchives(st store.State) {
 	if e.cfg.Installs == nil {
 		return
 	}
+	requestByGroup := make(map[string]string, len(st.AddonRequests))
+	failedAddonGroup := make(map[string]bool, len(st.AddonRequests))
+	for key, request := range st.AddonRequests {
+		requestByGroup[request.ArchiveGroupID] = key
+		failedAddonGroup[request.ArchiveGroupID] = request.State == "failed"
+	}
 	installs := e.cfg.Installs()
 	for _, group := range st.ArchiveGroups {
-		if !group.Pending {
+		if !group.Pending || failedAddonGroup[group.ID] {
 			continue
 		}
 		var combatPath, storagePath string
@@ -268,7 +288,10 @@ func (e *Engine) restorePendingArchives(st store.State) {
 			path: combatPath, size: info.Size(), baseURL: install.BaseURL, install: install,
 			queuedAt: group.CreatedAt, exitedAt: group.LastExitAt,
 			snapshotPath: combatPath, storagePath: storagePath, groupID: group.ID,
-			sourceRemoved: true,
+			addonRequestID: requestByGroup[group.ID], sourceRemoved: true,
+		}
+		if j.addonRequestID != "" {
+			e.addonQueued[j.addonRequestID] = true
 		}
 		if group.LogID != "" {
 			j.appendLogID = group.LogID
@@ -364,6 +387,28 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
+func companionRPCInstalls(installs []wowdir.Install, running, seen, previous map[string]bool, enabled func(wowdir.Install) bool) (active, stopped, cleanup []wowdir.Install) {
+	if enabled == nil {
+		return nil, nil, nil
+	}
+	for _, install := range installs {
+		if !enabled(install) {
+			continue
+		}
+		dir := install.Dir
+		switch {
+		case running[dir]:
+			active = append(active, install)
+		case !seen[dir]:
+			cleanup = append(cleanup, install)
+		case previous[dir]:
+			stopped = append(stopped, install)
+			cleanup = append(cleanup, install)
+		}
+	}
+	return active, stopped, cleanup
+}
+
 func (e *Engine) step(ctx context.Context, now time.Time, manual bool) {
 	var req *uploadRequest
 	if manual {
@@ -421,6 +466,22 @@ func (e *Engine) stepSelected(ctx context.Context, now time.Time, manual *upload
 		running = e.cfg.Running(ctx, installDirs)
 		for _, install := range installs {
 			runningByDir[install.Dir] = running
+		}
+	}
+	activeRPC, stoppedRPC, cleanupRPC := companionRPCInstalls(installs, runningByDir, e.installSeen, e.installRunning, e.cfg.CompanionRPC)
+	e.scanRPCRequests(ctx, now, activeRPC)
+	// Drain once after process exit so an append made just before shutdown is
+	// durable before the append-only journal is removed.
+	e.scanRPCRequests(ctx, now, stoppedRPC)
+	for _, install := range cleanupRPC {
+		e.addonCleanupPending[install.Dir] = true
+	}
+	for _, install := range installs {
+		if runningByDir[install.Dir] || !e.addonCleanupPending[install.Dir] {
+			continue
+		}
+		if e.removeHandledRPCRequests(install) && e.clearAddonRequestState(install) {
+			delete(e.addonCleanupPending, install.Dir)
 		}
 	}
 	for _, f := range files {
@@ -929,12 +990,18 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 		e.mu.Lock()
 		token, fast := e.token, e.wowUp
 		if token == "" || token == e.rejectedToken {
-			// Signed out while retrying; the tracker still has it queued.
+			// Addon archives have already been removed from CustomData, so keep
+			// their durable jobs blocked until authentication changes.
 			e.mu.Unlock()
+			if j.addonRequestID != "" {
+				e.updateAddonRequest(j.addonRequestID, "queued", "Waiting for Chronicle sign-in", upload.Result{}, time.Now())
+				return true, j
+			}
 			return false, j
 		}
 		e.setStatus(Status{State: StateUploading, Detail: "Uploading your log…", ReportURL: e.status.ReportURL})
 		e.mu.Unlock()
+		e.updateAddonRequest(j.addonRequestID, "uploading", "", upload.Result{}, time.Now())
 
 		res, err := e.cfg.Upload(ctx, token, UploadRequest{
 			BaseURL: j.baseURL, Path: j.snapshotPath, SourceID: src, Size: j.size, Fast: fast,
@@ -954,6 +1021,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 			e.rejectedToken = token
 			e.mu.Unlock()
 			e.cfg.Notify("Chronicle", "Chronicle needs you to sign in again.")
+			e.updateAddonRequest(j.addonRequestID, "queued", "Waiting for Chronicle sign-in", upload.Result{}, time.Now())
 			return true, j
 		case errors.As(err, &serverErr) && upload.Retryable(err):
 			e.reportUploadIssue(err)
@@ -1023,6 +1091,12 @@ func (e *Engine) alreadyUploaded(ctx context.Context, log *slog.Logger, j job, s
 // failure: the tracker marks it uploaded so it is neither retried nor queued
 // again, and the tray keeps pointing at the report that exists.
 func (e *Engine) skip(j job, src string, size int64, reportURL string) {
+	result := upload.Result{LogID: logIDFromReportURL(reportURL), ReportURL: reportURL, Duplicate: true}
+	addonState := "complete"
+	if j.addonRequestID != "" && e.cfg.Processing != nil && result.LogID != "" {
+		addonState = "processing"
+	}
+	e.updateAddonRequest(j.addonRequestID, addonState, "", result, time.Now())
 	e.mu.Lock()
 	e.tracker.MarkUploaded(j.path, j.size)
 	now := e.now
@@ -1110,6 +1184,7 @@ func clearIssue(issues []sidekick.Issue, code string) []sidekick.Issue {
 
 // fail records a permanent failure and tells the user once.
 func (e *Engine) fail(j job, err error) {
+	e.updateAddonRequest(j.addonRequestID, "failed", rpcFailureMessage(err), upload.Result{}, time.Now())
 	e.mu.Lock()
 	e.tracker.MarkFailed(j.path, j.size)
 	e.mu.Unlock()
@@ -1126,6 +1201,14 @@ func (e *Engine) notifyUploadFailure(err error) {
 }
 
 func (e *Engine) finish(f job, src string, res upload.Result) {
+	if res.LogID == "" {
+		res.LogID = logIDFromReportURL(res.ReportURL)
+	}
+	addonState := "complete"
+	if f.addonRequestID != "" && e.cfg.Processing != nil && res.LogID != "" {
+		addonState = "processing"
+	}
+	e.updateAddonRequest(f.addonRequestID, addonState, "", res, time.Now())
 	e.mu.Lock()
 	e.tracker.MarkUploaded(f.path, f.size)
 	now := e.now

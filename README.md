@@ -31,6 +31,14 @@ GitHub Releases provides both installed and portable options:
 - **macOS:** a drag-to-Applications DMG, plus the zipped universal app used by automatic updates.
 - **Linux:** portable tarballs for x64 and ARM64.
 
+## ChronicleCompanion RPC
+
+Vanilla 1.12a ChronicleCompanion can request an immutable combat-log upload
+through Sidekick's versioned local file RPC. The initial RPC surface exposes only
+`combat_log.upload`. See [the addon-facing RPC v1 contract](docs/chronicle-companion-rpc-v1.md)
+for exact filenames, TSV records, retry behavior, processing states, and instance
+links.
+
 ## Development
 
 ```sh
