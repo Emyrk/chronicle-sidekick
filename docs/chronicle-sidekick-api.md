@@ -52,6 +52,11 @@ ignored. Chronicle should return `settings_url` on every successful heartbeat,
 including responses where managed configuration is unchanged, so the tray's
 **View Settings…** action remains available.
 
+For local debugging, Sidekick writes the most recently attempted heartbeat payload
+to `last-heartbeat.json` in its data directory before sending the request. The
+snapshot is formatted JSON, replaced on each heartbeat, and contains no OAuth
+token.
+
 ## WoW directory inspection
 
 Each reported WoW directory includes a fresh inspection of the allowlisted addons

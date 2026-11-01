@@ -249,10 +249,12 @@ func TestViewSettingsRefreshesStatusAndConfigBeforeOpening(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
+	dataDir := t.TempDir()
 	a := &app{
-		server: server.URL,
-		store:  st,
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		server:  server.URL,
+		dataDir: dataDir,
+		store:   st,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		token: &oauth2.Token{
 			AccessToken: "access-token",
 			Expiry:      time.Now().Add(time.Hour),
@@ -266,6 +268,11 @@ func TestViewSettingsRefreshesStatusAndConfigBeforeOpening(t *testing.T) {
 	require.Equal(t, configHash, st.Get().EffectiveConfigHash())
 	require.Equal(t, 30, st.Get().EffectiveConfig().Archive.RetentionDays)
 	status := <-statusCh
+	snapshot, err := os.ReadFile(filepath.Join(dataDir, lastHeartbeatFile))
+	require.NoError(t, err)
+	var saved sidekick.Status
+	require.NoError(t, json.Unmarshal(snapshot, &saved))
+	require.Equal(t, status, saved)
 	require.Equal(t, "windows/amd64", status.Platform)
 	require.Equal(t, "test", status.SidekickVersion)
 }

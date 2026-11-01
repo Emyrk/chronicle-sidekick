@@ -137,7 +137,7 @@ func run() error {
 		logger.Warn("load OAuth token", "err", err)
 	}
 	a := &app{
-		server: tn.BaseURL, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token,
+		server: tn.BaseURL, dataDir: dir, layout: tn.Layout, store: st, logger: logger, cancel: cancel, token: token,
 		installation: installation, background: *background, stateDebug: *stateDebug,
 	}
 	if *stateDebug {

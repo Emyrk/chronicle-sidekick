@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,7 @@ import (
 
 type app struct {
 	server         string
+	dataDir        string
 	uploadOverride string
 	layout         tenant.Layout
 	store          *store.Store
@@ -54,9 +56,10 @@ type app struct {
 	pairCode      string             // device code shown while the pairing is waiting
 	pairMsg       string             // last pairing outcome, shown until the next attempt
 
-	authMu     sync.Mutex
-	token      *oauth2.Token
-	tokenDirty bool
+	authMu      sync.Mutex
+	token       *oauth2.Token
+	heartbeatMu sync.Mutex
+	tokenDirty  bool
 }
 
 type wowMenuEntry struct {
@@ -240,6 +243,22 @@ func (a *app) runStateDebug(ctx context.Context) {
 	}
 }
 
+const lastHeartbeatFile = "last-heartbeat.json"
+
+func (a *app) writeLastHeartbeat(status sidekick.Status) error {
+	if a.dataDir == "" {
+		return nil
+	}
+	body, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	a.heartbeatMu.Lock()
+	defer a.heartbeatMu.Unlock()
+	return os.WriteFile(filepath.Join(a.dataDir, lastHeartbeatFile), body, 0o600)
+}
+
 const statusInterval = time.Minute
 
 func (a *app) reportStatus(ctx context.Context) {
@@ -268,6 +287,9 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	st := a.store.Get()
 	status := sidekickStatus(a.installs(), st.EffectiveConfig(), st.Issues, a.installation.Platform, a.installation.Version, autostart.Enabled())
 	status.ConfigHash = st.EffectiveConfigHash()
+	if err := a.writeLastHeartbeat(status); err != nil {
+		a.logger.Warn("write last heartbeat", "err", err)
+	}
 	response, err := client.Update(ctx, status)
 	if err != nil {
 		a.logger.Warn("Sidekick status update", "err", err)
