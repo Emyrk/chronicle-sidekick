@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 )
@@ -78,16 +79,20 @@ func TestWoWPathsRoundTripAndCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.Update(func(st *store.State) {
 		st.WoWPaths = []string{"/wow/capy", "/wow/warmane"}
+		st.WoWLogFormats = map[string]logformat.LogFormat{"capy": logformat.LogFormat112aCcAddon}
 		st.WoWPathsSet = true
 	}))
 
 	again, err := store.Open(path)
 	require.NoError(t, err)
 	require.Equal(t, []string{"/wow/capy", "/wow/warmane"}, again.Get().WoWPaths)
+	require.Equal(t, logformat.LogFormat112aCcAddon, again.Get().WoWLogFormats["capy"])
 	require.True(t, again.Get().WoWPathsSet)
 	copy := again.Get()
 	copy.WoWPaths[0] = "/changed"
+	copy.WoWLogFormats["capy"] = logformat.LogFormat243CcAddon
 	require.Equal(t, "/wow/capy", again.Get().WoWPaths[0])
+	require.Equal(t, logformat.LogFormat112aCcAddon, again.Get().WoWLogFormats["capy"])
 }
 
 func TestIssuesRoundTripAndCopy(t *testing.T) {
@@ -135,7 +140,7 @@ func TestManagedConfigRoundTrip(t *testing.T) {
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 14},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			"dir": {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			"dir": {AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
 	require.NoError(t, s.Update(func(st *store.State) {

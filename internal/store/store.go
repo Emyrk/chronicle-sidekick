@@ -13,6 +13,7 @@ import (
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
 )
@@ -34,6 +35,9 @@ type State struct {
 	// WoWPaths are user-selected WoW folders. Multiple clients can be watched
 	// and routed independently by their realmlists.
 	WoWPaths []string `json:"wow_paths,omitempty"`
+	// WoWLogFormats are user-selected Chronicle parser formats by stable directory ID.
+	// Directories without an override use Sidekick's locally detected best guess.
+	WoWLogFormats map[string]logformat.LogFormat `json:"wow_log_formats,omitempty"`
 	// WoWPathsSet distinguishes an explicitly managed, possibly empty folder list
 	// from older state that should retain automatic-detection fallback behavior.
 	WoWPathsSet bool `json:"wow_paths_set,omitempty"`
@@ -195,6 +199,10 @@ func (s *Store) Get() State {
 	defer s.mu.Unlock()
 	cp := s.st
 	cp.WoWPaths = append([]string(nil), s.st.WoWPaths...)
+	cp.WoWLogFormats = make(map[string]logformat.LogFormat, len(s.st.WoWLogFormats))
+	for k, v := range s.st.WoWLogFormats {
+		cp.WoWLogFormats[k] = v
+	}
 	cp.AddonRequests = make(map[string]AddonRequest, len(s.st.AddonRequests))
 	for k, v := range s.st.AddonRequests {
 		v.Instances = append([]AddonInstance(nil), v.Instances...)

@@ -1,7 +1,11 @@
 // Package tenant describes the Chronicle deployment the uploader talks to.
 package tenant
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
+)
 
 const (
 	// AuthBaseURL is the shared Chronicle deployment used for pairing and API
@@ -48,23 +52,24 @@ var Known = []Tenant{{BaseURL: AuthBaseURL, Layout: DefaultLayout}}
 
 // Realm maps a realmlist host to its Chronicle tenant URL.
 type Realm struct {
-	Name    string
-	BaseURL string
+	Name      string
+	BaseURL   string
+	LogFormat logformat.LogFormat
 }
 
 var realms = map[string]Realm{
-	"192.168.1.214":           {Name: "OctoPTR", BaseURL: "https://octoptr.chronicleclassic.com"},
-	"185.165.170.6":           {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com"},
-	"play.octowow.st":         {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com"},
-	"apac.capycraft.io":       {Name: "CapyCraft", BaseURL: "https://capy.chronicleclassic.com"},
-	"logon.vanillaplus.org":   {Name: "VanillaPlus", BaseURL: "https://vanillaplus.chronicleclassic.com"},
-	"login.twinstar-wow.com":  {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
-	"login2.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
-	"login3.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com"},
-	"login.moonwell.su":       {Name: "Moonwell", BaseURL: "https://moonwell.chronicleclassic.com"},
-	"crusader-storm.com":      {Name: "Crusader Storm", BaseURL: "https://crusader-storm.chronicleclassic.com"},
-	"logon.chromiecraft.com":  {Name: "ChromieCraft", BaseURL: "https://chromie.chronicleclassic.com"},
-	"logon.warmane.com":       {Name: "Warmane", BaseURL: "https://warmane.chronicleclassic.com"},
+	"192.168.1.214":           {Name: "OctoPTR", BaseURL: "https://octoptr.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"185.165.170.6":           {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"play.octowow.st":         {Name: "OctoWoW", BaseURL: "https://octo.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"apac.capycraft.io":       {Name: "CapyCraft", BaseURL: "https://capy.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"logon.vanillaplus.org":   {Name: "VanillaPlus", BaseURL: "https://vanillaplus.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"login.twinstar-wow.com":  {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"login2.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"login3.twinstar-wow.com": {Name: "Kronos", BaseURL: "https://kronos.chronicleclassic.com", LogFormat: logformat.LogFormat112aCcAddon},
+	"login.moonwell.su":       {Name: "Moonwell", BaseURL: "https://moonwell.chronicleclassic.com", LogFormat: logformat.LogFormat243CcAddon},
+	"crusader-storm.com":      {Name: "Crusader Storm", BaseURL: "https://crusader-storm.chronicleclassic.com", LogFormat: logformat.LogFormat243CcAddon},
+	"logon.chromiecraft.com":  {Name: "ChromieCraft", BaseURL: "https://chromie.chronicleclassic.com", LogFormat: logformat.LogFormat335aCcAddon},
+	"logon.warmane.com":       {Name: "Warmane", BaseURL: "https://warmane.chronicleclassic.com", LogFormat: logformat.LogFormat335aCcAddon},
 }
 
 // ForRealm returns the Chronicle tenant for a normalized realmlist host.

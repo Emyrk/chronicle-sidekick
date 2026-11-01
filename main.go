@@ -20,6 +20,7 @@ import (
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
@@ -169,13 +170,13 @@ func run() error {
 			if err != nil {
 				return upload.Result{}, err
 			}
-			gameFormat := a.gameFormatForPath(req.Path)
+			format := a.logFormatForPath(req.Path)
 			storagePath := req.SidekickStoragePath
-			if !gameFormat.IncludesSidekickStorage() {
+			if !format.IncludesSidekickStorage() {
 				storagePath = ""
 			}
 			c := upload.Client{
-				BaseURL: req.BaseURL, Token: token, Format: gameFormat.UploadFormat(), Fast: req.Fast,
+				BaseURL: req.BaseURL, Token: token, Format: string(format), Fast: req.Fast,
 				SidekickStoragePath: storagePath, AppendLogID: req.AppendLogID,
 				UploadID: req.UploadID, ChunkSequence: req.ChunkSequence,
 			}
@@ -262,35 +263,37 @@ func ensureInstallation(st *store.Store) (installationInfo, error) {
 
 const maxStatusWoWDirectories = 50
 
-func gameFormatForInstall(install wowdir.Install, config sidekick.SidekickConfig) sidekick.GameFormat {
-	if format := config.WoWDirectories[sidekick.DirectoryID(install.Dir)].GameFormat; format != "" {
+func logFormatForInstall(install wowdir.Install, overrides map[string]logformat.LogFormat) logformat.LogFormat {
+	if format := overrides[sidekick.DirectoryID(install.Dir)]; format.ValidSidekick() {
 		return format
 	}
-	return sidekick.GameFormat(install.DetectedGameFormat)
+	return install.DetectedLogFormat
 }
 
-func (a *app) gameFormatForPath(path string) sidekick.GameFormat {
-	config := a.store.Get().EffectiveConfig()
+func (a *app) logFormatForPath(path string) logformat.LogFormat {
+	overrides := a.store.Get().WoWLogFormats
 	for _, install := range a.installs() {
 		relative, err := filepath.Rel(install.Dir, path)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			continue
 		}
-		return gameFormatForInstall(install, config)
+		return logFormatForInstall(install, overrides)
 	}
 	return ""
 }
 
 func (a *app) companionRPCEnabled(install wowdir.Install) bool {
-	return gameFormatForInstall(install, a.store.Get().EffectiveConfig()) == sidekick.GameFormatVanilla112a
+	return logFormatForInstall(install, a.store.Get().WoWLogFormats) == logformat.LogFormat112aCcAddon
 }
 
 func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
-	config, ok := a.store.Get().EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
+	state := a.store.Get()
+	config, ok := state.EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
 	if !ok || config.AutoUpload != sidekick.AutoUploadOnGameExit {
 		return watch.Trigger{}
 	}
-	for _, mode := range sidekick.AutoUploadCapabilities()[config.GameFormat] {
+	format := logFormatForInstall(install, state.WoWLogFormats)
+	for _, mode := range sidekick.AutoUploadCapabilities()[format] {
 		if mode == config.AutoUpload {
 			return watch.Trigger{OnExit: true}
 		}
@@ -299,13 +302,11 @@ func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 }
 
 func (a *app) captureSidekickStorage(install wowdir.Install) bool {
-	config := a.store.Get().EffectiveConfig().WoWDirectories[sidekick.DirectoryID(install.Dir)]
-	return config.GameFormat.IncludesSidekickStorage()
+	return logFormatForInstall(install, a.store.Get().WoWLogFormats).IncludesSidekickStorage()
 }
 
 func (a *app) appendGroupKey(install wowdir.Install, path string) string {
-	config := a.store.Get().EffectiveConfig()
-	if gameFormatForInstall(install, config) != sidekick.GameFormatVanilla112a {
+	if logFormatForInstall(install, a.store.Get().WoWLogFormats) != logformat.LogFormat112aCcAddon {
 		return ""
 	}
 	name := filepath.Base(path)
@@ -315,7 +316,7 @@ func (a *app) appendGroupKey(install wowdir.Install, path string) string {
 	return strings.ToLower(name)
 }
 
-func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, issues []sidekick.Issue, platform, appVersion string, startAtLogin bool) sidekick.Status {
+func sidekickStatus(installs []wowdir.Install, overrides map[string]logformat.LogFormat, issues []sidekick.Issue, platform, appVersion string, startAtLogin bool) sidekick.Status {
 	if len(installs) > maxStatusWoWDirectories {
 		installs = installs[:maxStatusWoWDirectories]
 	}
@@ -326,11 +327,11 @@ func sidekickStatus(installs []wowdir.Install, config sidekick.SidekickConfig, i
 			name = install.BaseURL
 		}
 		id := sidekick.DirectoryID(install.Dir)
-		gameFormat := gameFormatForInstall(install, config)
+		format := logFormatForInstall(install, overrides)
 		directories = append(directories, sidekick.WoWDirectory{
 			ID: id, Path: install.Dir, TenantName: name, TenantBaseURL: install.BaseURL,
-			Realmlist: install.Realmlist, GameFormat: gameFormat,
-			Inspection: inspection.Inspect(install.Dir, string(gameFormat)),
+			Realmlist: install.Realmlist, LogFormat: format,
+			Inspection: inspection.Inspect(install.Dir, format),
 		})
 	}
 	return sidekick.Status{
@@ -363,6 +364,19 @@ func addWoWPath(st *store.State, path string) bool {
 	st.WoWPath = ""
 	st.WoWPaths = append(paths, path)
 	return true
+}
+
+func rememberDetectedLogFormats(st *store.State, installs []wowdir.Install) {
+	if st.WoWLogFormats == nil {
+		st.WoWLogFormats = map[string]logformat.LogFormat{}
+	}
+	for _, install := range installs {
+		id := sidekick.DirectoryID(install.Dir)
+		if _, selected := st.WoWLogFormats[id]; selected || !install.DetectedLogFormat.ValidSidekick() {
+			continue
+		}
+		st.WoWLogFormats[id] = install.DetectedLogFormat
+	}
 }
 
 func canonicalWoWPath(path string) string {
@@ -451,12 +465,11 @@ func (a *app) installs() []wowdir.Install {
 			}
 		}
 	}
-	config := st.EffectiveConfig()
 	for i := range found {
-		switch gameFormatForInstall(found[i], config) {
-		case sidekick.GameFormatVanilla112a:
+		switch logFormatForInstall(found[i], st.WoWLogFormats) {
+		case logformat.LogFormat112aCcAddon:
 			found[i].LogGlobs = wowdir.ChronicleCustomLogGlobs(found[i].Dir)
-		case sidekick.GameFormatClassic1142, sidekick.GameFormatTBC243, sidekick.GameFormatWrath335a:
+		case logformat.LogFormatHermesproxy1142Cc, logformat.LogFormat243CcAddon, logformat.LogFormat335aCcAddon:
 			found[i].LogGlobs = wowdir.WoWCombatLogGlobs(found[i].Dir)
 		}
 		if a.uploadOverride != "" {

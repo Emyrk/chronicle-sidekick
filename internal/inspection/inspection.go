@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 )
 
 // Status summarizes whether an installation needs user action.
@@ -54,28 +56,28 @@ type requirement struct {
 	required bool
 }
 
-var profiles = map[string][]requirement{
-	"vanilla_1.12a": {
+var profiles = map[logformat.LogFormat][]requirement{
+	logformat.LogFormat112aCcAddon: {
 		{id: "addon.chronicle_companion", category: CategoryAddon, name: "ChronicleCompanion", required: true},
 		{id: "dll.nampower", category: CategoryDLL, name: "nampower.dll", required: true},
 		{id: "dll.classic_api", category: CategoryDLL, name: "ClassicAPI.dll"},
 		{id: "dll.superwow_hook", category: CategoryDLL, name: "SuperWoWhook.dll"},
 	},
-	"classic_1.14.2": {
+	logformat.LogFormatHermesproxy1142Cc: {
 		{id: "addon.chronicle_companion_jims_proxy", category: CategoryAddon, name: "ChronicleCompanionJimsProxy", required: true},
 	},
-	"tbc_2.4.3": {
+	logformat.LogFormat243CcAddon: {
 		{id: "addon.chronicle_companion_tbc", category: CategoryAddon, name: "ChronicleCompanionTBC", required: true},
 	},
-	"wotlk_3.3.5a": {
+	logformat.LogFormat335aCcAddon: {
 		{id: "addon.chronicle_companion_wotlk", category: CategoryAddon, name: "ChronicleCompanionWoTLK", required: true},
 	},
 }
 
 // Inspect checks only the components allowlisted for gameFormat. Addons are
 // directories under Interface/AddOns; DLLs are regular files in the WoW root.
-func Inspect(dir, gameFormat string) Report {
-	requirements, ok := profiles[gameFormat]
+func Inspect(dir string, format logformat.LogFormat) Report {
+	requirements, ok := profiles[format]
 	if !ok {
 		return Report{Status: StatusUnknown, Checks: []Check{}}
 	}

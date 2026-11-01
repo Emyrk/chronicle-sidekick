@@ -20,6 +20,7 @@ import (
 
 	"github.com/Emyrk/chronicle-sidekick/internal/autostart"
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/pair"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
@@ -285,7 +286,7 @@ func (a *app) reportStatusOnce(ctx context.Context) {
 	}
 	client := sidekick.Client{BaseURL: a.server, Token: token}
 	st := a.store.Get()
-	status := sidekickStatus(a.installs(), st.EffectiveConfig(), st.Issues, a.installation.Platform, a.installation.Version, autostart.Enabled())
+	status := sidekickStatus(a.installs(), st.WoWLogFormats, st.Issues, a.installation.Platform, a.installation.Version, autostart.Enabled())
 	status.ConfigHash = st.EffectiveConfigHash()
 	if err := a.writeLastHeartbeat(status); err != nil {
 		a.logger.Warn("write last heartbeat", "err", err)
@@ -627,6 +628,11 @@ func (a *app) addWoWMenuEntry(ctx context.Context, path string) {
 	entryCtx, cancel := context.WithCancel(ctx)
 	installs, _ := wowdir.Resolve(path, a.layout)
 	addUploadActions(item, entryCtx, a.engine, wowUploadTargets(installs))
+	if len(installs) == 1 {
+		format := logFormatForInstall(installs[0], a.store.Get().WoWLogFormats)
+		formatItem := item.AddSubMenuItem("Client: "+format.Label()+"…", "Change this WoW client's Chronicle log format")
+		go a.changeLogFormatOnClick(entryCtx, formatItem, installs[0])
+	}
 	sites := a.wowFolderSites(path)
 	switch len(sites) {
 	case 1:
@@ -656,6 +662,59 @@ func (a *app) addWoWMenuEntry(ctx context.Context, path string) {
 	}()
 }
 
+func (a *app) setLogFormat(install wowdir.Install, format logformat.LogFormat) error {
+	if !format.ValidSidekick() {
+		return fmt.Errorf("unsupported Chronicle log format %q", format)
+	}
+	return a.store.Update(func(s *store.State) {
+		if s.WoWLogFormats == nil {
+			s.WoWLogFormats = map[string]logformat.LogFormat{}
+		}
+		s.WoWLogFormats[sidekick.DirectoryID(install.Dir)] = format
+	})
+}
+
+func (a *app) changeLogFormatOnClick(ctx context.Context, item *systray.MenuItem, install wowdir.Install) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-item.ClickedCh:
+			current := logFormatForInstall(install, a.store.Get().WoWLogFormats)
+			labels := make([]string, 0, len(logformat.SidekickFormats()))
+			byLabel := make(map[string]logformat.LogFormat, len(logformat.SidekickFormats()))
+			for _, format := range logformat.SidekickFormats() {
+				label := format.Label()
+				labels = append(labels, label)
+				byLabel[label] = format
+			}
+			selected, err := zenity.List(
+				"Select the World of Warcraft client used by this folder.", labels,
+				zenity.Title("Chronicle Sidekick — Client Format"),
+				zenity.DefaultItems(current.Label()),
+				zenity.DisallowEmpty(),
+			)
+			if err != nil {
+				if err != zenity.ErrCanceled {
+					a.logger.Error("select WoW client format", "err", err)
+				}
+				continue
+			}
+			format, ok := byLabel[selected]
+			if !ok {
+				continue
+			}
+			if err := a.setLogFormat(install, format); err != nil {
+				a.logger.Error("save WoW client format", "path", install.Dir, "err", err)
+				continue
+			}
+			item.SetTitle("Client: " + format.Label() + "…")
+			a.refreshUploadMenu(ctx)
+			a.reportStatusOnce(ctx)
+		}
+	}
+}
+
 func openSiteOnClick(ctx context.Context, item *systray.MenuItem, siteURL string) {
 	for {
 		select {
@@ -679,7 +738,13 @@ func (a *app) wowFolderLabel(path string) string {
 }
 
 func (a *app) removeWoWFolder(ctx context.Context, path string) {
-	if err := a.store.Update(func(s *store.State) { removeWoWPath(s, path) }); err != nil {
+	installs, _ := wowdir.Resolve(path, a.layout)
+	if err := a.store.Update(func(s *store.State) {
+		removeWoWPath(s, path)
+		for _, install := range installs {
+			delete(s.WoWLogFormats, sidekick.DirectoryID(install.Dir))
+		}
+	}); err != nil {
 		a.logger.Error("remove wow folder", "path", path, "err", err)
 		return
 	}
@@ -703,7 +768,10 @@ func (a *app) removeWoWFolder(ctx context.Context, path string) {
 func (a *app) detectWoWFolders(ctx context.Context) {
 	var added []string
 	found := wowdir.Detect(wowdir.StandardRoots(), a.layout)
-	if err := a.store.Update(func(s *store.State) { added = addDetectedWoWPaths(s, found, a.layout) }); err != nil {
+	if err := a.store.Update(func(s *store.State) {
+		added = addDetectedWoWPaths(s, found, a.layout)
+		rememberDetectedLogFormats(s, found)
+	}); err != nil {
 		a.logger.Error("save automatically detected wow folders", "err", err)
 		notify("Chronicle", "Couldn't save automatically detected WoW folders.")
 		return
@@ -763,7 +831,8 @@ func (a *app) chooseFolder(ctx context.Context) {
 		}
 		return
 	}
-	if _, err := wowdir.Resolve(path, a.layout); err != nil {
+	installs, err := wowdir.Resolve(path, a.layout)
+	if err != nil {
 		title, message := wowFolderError(err)
 		if dialogErr := zenity.Error(message, zenity.Title(title)); dialogErr != nil && dialogErr != zenity.ErrCanceled {
 			a.logger.Error("show wow folder error", "err", dialogErr)
@@ -772,7 +841,10 @@ func (a *app) chooseFolder(ctx context.Context) {
 	}
 	path = filepath.Clean(path)
 	added := false
-	if err := a.store.Update(func(s *store.State) { added = addWoWPath(s, path) }); err != nil {
+	if err := a.store.Update(func(s *store.State) {
+		added = addWoWPath(s, path)
+		rememberDetectedLogFormats(s, installs)
+	}); err != nil {
 		a.logger.Error("save wow path", "err", err)
 		return
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
+	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/tenant"
@@ -70,25 +71,19 @@ func TestSidekickStatusIncludesWoWDirectories(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join("games", "warmane")
 	id := sidekick.DirectoryID(dir)
-	config := sidekick.SidekickConfig{
-		Version: sidekick.CurrentConfigVersion,
-		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
-		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			id: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
-		},
-	}
 	issues := []sidekick.Issue{{Code: "upload_failed", Message: "A combat log upload failed."}}
 	status := sidekickStatus([]wowdir.Install{{
 		Flavor: "Warmane", Dir: dir,
 		BaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-	}}, config, issues, "windows/amd64", "1.2.3", true)
+		DetectedLogFormat: logformat.LogFormat335aCcAddon,
+	}}, nil, issues, "windows/amd64", "1.2.3", true)
 	require.Equal(t, sidekick.Status{
 		Platform: "windows/amd64", SidekickVersion: "1.2.3",
 		StartAtLogin: true, AutoUploadCapabilities: sidekick.AutoUploadCapabilities(),
 		WoWDirectories: []sidekick.WoWDirectory{{
 			ID: id, Path: dir, TenantName: "Warmane",
 			TenantBaseURL: "https://warmane.chronicleclassic.com", Realmlist: "logon.warmane.com",
-			GameFormat: sidekick.GameFormatWrath335a,
+			LogFormat: logformat.LogFormat335aCcAddon,
 			Inspection: inspection.Report{
 				Status: inspection.StatusActionRequired,
 				Checks: []inspection.Check{{
@@ -105,13 +100,10 @@ func TestSidekickStatusIncludesInspection(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "Interface", "AddOns", "ChronicleCompanionTBC"), 0o755))
-	id := sidekick.DirectoryID(dir)
-	config := sidekick.DefaultConfig()
-	config.WoWDirectories[id] = sidekick.WoWDirectoryConfig{GameFormat: sidekick.GameFormatTBC243}
-
 	status := sidekickStatus([]wowdir.Install{{
 		Flavor: "Moonwell", Dir: dir, BaseURL: "https://moonwell.chronicleclassic.com",
-	}}, config, nil, "windows/amd64", "1.2.3", false)
+		DetectedLogFormat: logformat.LogFormat243CcAddon,
+	}}, nil, nil, "windows/amd64", "1.2.3", false)
 
 	require.Equal(t, inspection.Report{
 		Status: inspection.StatusReady,
@@ -125,7 +117,7 @@ func TestSidekickStatusIncludesInspection(t *testing.T) {
 func TestSidekickStatusUsesEmptyRequiredCollections(t *testing.T) {
 	t.Parallel()
 
-	status := sidekickStatus(nil, sidekick.DefaultConfig(), nil, "windows/amd64", "1.2.3", false)
+	status := sidekickStatus(nil, nil, nil, "windows/amd64", "1.2.3", false)
 	require.NotNil(t, status.AutoUploadCapabilities)
 	require.NotNil(t, status.WoWDirectories)
 	require.NotNil(t, status.Issues)
@@ -136,23 +128,20 @@ func TestSidekickStatusUsesEmptyRequiredCollections(t *testing.T) {
 	require.Contains(t, string(body), `"issues":[]`)
 }
 
-func TestSidekickStatusReportsDetectedGameFormatUntilConfigured(t *testing.T) {
+func TestSidekickStatusUsesLocalOverrideBeforeDetectedFormat(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join("games", "classic-era")
 	install := wowdir.Install{
 		Flavor: "_classic_era_", Dir: dir, BaseURL: tenant.ForeverBaseURL,
-		DetectedGameFormat: string(sidekick.GameFormatClassic1142),
+		DetectedLogFormat: logformat.LogFormatHermesproxy1142Cc,
 	}
 
-	status := sidekickStatus([]wowdir.Install{install}, sidekick.DefaultConfig(), nil, "windows/amd64", "1.2.3", false)
-	require.Equal(t, sidekick.GameFormatClassic1142, status.WoWDirectories[0].GameFormat)
+	status := sidekickStatus([]wowdir.Install{install}, nil, nil, "windows/amd64", "1.2.3", false)
+	require.Equal(t, logformat.LogFormatHermesproxy1142Cc, status.WoWDirectories[0].LogFormat)
 
-	config := sidekick.DefaultConfig()
-	config.WoWDirectories[sidekick.DirectoryID(dir)] = sidekick.WoWDirectoryConfig{
-		GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadDisabled,
-	}
-	status = sidekickStatus([]wowdir.Install{install}, config, nil, "windows/amd64", "1.2.3", false)
-	require.Equal(t, sidekick.GameFormatTBC243, status.WoWDirectories[0].GameFormat)
+	overrides := map[string]logformat.LogFormat{sidekick.DirectoryID(dir): logformat.LogFormat243CcAddon}
+	status = sidekickStatus([]wowdir.Install{install}, overrides, nil, "windows/amd64", "1.2.3", false)
+	require.Equal(t, logformat.LogFormat243CcAddon, status.WoWDirectories[0].LogFormat)
 }
 
 func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
@@ -161,7 +150,7 @@ func TestSidekickStatusLimitsWoWDirectories(t *testing.T) {
 	for i := range installs {
 		installs[i] = wowdir.Install{Flavor: "WoW", Dir: filepath.Join("games", string(rune('a'+i))), BaseURL: "https://example.com"}
 	}
-	require.Len(t, sidekickStatus(installs, sidekick.DefaultConfig(), nil, "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
+	require.Len(t, sidekickStatus(installs, nil, nil, "linux/amd64", "dev", false).WoWDirectories, maxStatusWoWDirectories)
 }
 
 func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
@@ -173,14 +162,14 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 	require.NoError(t, st.Update(func(s *store.State) {
 		s.WoWPaths = []string{dir}
 		s.WoWPathsSet = true
+		s.WoWLogFormats = map[string]logformat.LogFormat{
+			sidekick.DirectoryID(dir): logformat.LogFormat335aCcAddon,
+		}
 		s.Config = sidekick.SidekickConfig{
 			Version: sidekick.CurrentConfigVersion,
 			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-				sidekick.DirectoryID(dir): {
-					GameFormat: sidekick.GameFormatWrath335a,
-					AutoUpload: sidekick.AutoUploadOnGameExit,
-				},
+				sidekick.DirectoryID(dir): {AutoUpload: sidekick.AutoUploadOnGameExit},
 			},
 		}
 	}))
@@ -189,7 +178,7 @@ func TestAutoUploadTriggerUsesDirectoryConfig(t *testing.T) {
 	require.True(t, a.autoUploadTrigger(install).OnExit)
 	require.True(t, a.captureSidekickStorage(install))
 	require.False(t, a.autoUploadTrigger(wowdir.Install{Dir: filepath.Join(dir, "other")}).OnExit)
-	require.Equal(t, sidekick.GameFormatWrath335a, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
+	require.Equal(t, logformat.LogFormat335aCcAddon, a.logFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
 func TestTBCConfigEnablesExitUploadWithoutSidekickStorage(t *testing.T) {
@@ -202,11 +191,12 @@ func TestTBCConfigEnablesExitUploadWithoutSidekickStorage(t *testing.T) {
 	require.NoError(t, st.Update(func(s *store.State) {
 		s.WoWPaths = []string{dir}
 		s.WoWPathsSet = true
+		s.WoWLogFormats = map[string]logformat.LogFormat{directoryID: logformat.LogFormat243CcAddon}
 		s.Config = sidekick.SidekickConfig{
 			Version: sidekick.CurrentConfigVersion,
 			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-				directoryID: {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
+				directoryID: {AutoUpload: sidekick.AutoUploadOnGameExit},
 			},
 		}
 	}))
@@ -215,7 +205,7 @@ func TestTBCConfigEnablesExitUploadWithoutSidekickStorage(t *testing.T) {
 
 	require.True(t, a.autoUploadTrigger(install).OnExit)
 	require.False(t, a.captureSidekickStorage(install))
-	require.Equal(t, sidekick.GameFormatTBC243, a.gameFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
+	require.Equal(t, logformat.LogFormat243CcAddon, a.logFormatForPath(filepath.Join(dir, "Logs", "WoWCombatLog.txt")))
 }
 
 func TestViewSettingsRefreshesStatusAndConfigBeforeOpening(t *testing.T) {
@@ -296,7 +286,7 @@ func TestReconcileConfigPersistsMismatch(t *testing.T) {
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			directoryID: {AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
 
@@ -344,7 +334,7 @@ func TestReconcileConfigRejectsMismatchedHash(t *testing.T) {
 		Version: sidekick.CurrentConfigVersion,
 		Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
 		WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-			directoryID: {GameFormat: sidekick.GameFormatWrath335a, AutoUpload: sidekick.AutoUploadOnGameExit},
+			directoryID: {AutoUpload: sidekick.AutoUploadOnGameExit},
 		},
 	}
 
@@ -421,6 +411,25 @@ func TestAddAndRemoveWoWPaths(t *testing.T) {
 	require.Empty(t, st.WoWPaths)
 }
 
+func TestRememberDetectedLogFormatsPreservesUserSelection(t *testing.T) {
+	t.Parallel()
+	first := filepath.Join("games", "one")
+	second := filepath.Join("games", "two")
+	firstID := sidekick.DirectoryID(first)
+	secondID := sidekick.DirectoryID(second)
+	st := store.State{WoWLogFormats: map[string]logformat.LogFormat{
+		firstID: logformat.LogFormat335aCcAddon,
+	}}
+
+	rememberDetectedLogFormats(&st, []wowdir.Install{
+		{Dir: first, DetectedLogFormat: logformat.LogFormat112aCcAddon},
+		{Dir: second, DetectedLogFormat: logformat.LogFormat243CcAddon},
+	})
+
+	require.Equal(t, logformat.LogFormat335aCcAddon, st.WoWLogFormats[firstID])
+	require.Equal(t, logformat.LogFormat243CcAddon, st.WoWLogFormats[secondID])
+}
+
 func TestAddDetectedWoWPathsPreservesManualFolders(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -481,6 +490,18 @@ func TestWoWUploadTargets(t *testing.T) {
 	require.Equal(t, "Warmane (two)", duplicates[1].Name)
 }
 
+func TestSetLogFormatPersistsLocalSelection(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+	a := &app{store: st}
+	install := wowdir.Install{Dir: filepath.Join("games", "wow")}
+
+	require.NoError(t, a.setLogFormat(install, logformat.LogFormat243CcAddon))
+	require.Equal(t, logformat.LogFormat243CcAddon, st.Get().WoWLogFormats[sidekick.DirectoryID(install.Dir)])
+	require.Error(t, a.setLogFormat(install, logformat.LogFormatV22Cleu))
+}
+
 func TestWoWFolderSites(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -524,7 +545,7 @@ func TestInstallsReturnsAllConfiguredWoWFolders(t *testing.T) {
 	require.Equal(t, "https://warmane.chronicleclassic.com", got[1].BaseURL)
 }
 
-func TestInstallsSelectsLogsForManagedGameFormat(t *testing.T) {
+func TestInstallsSelectsLogsForLocalLogFormat(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	vanilla := fakeLegacyInstall(t, root, "Vanilla", "apac.capycraft.io")
@@ -534,13 +555,9 @@ func TestInstallsSelectsLogsForManagedGameFormat(t *testing.T) {
 	require.NoError(t, st.Update(func(s *store.State) {
 		s.WoWPaths = []string{vanilla, tbc}
 		s.WoWPathsSet = true
-		s.Config = sidekick.SidekickConfig{
-			Version: sidekick.CurrentConfigVersion,
-			Archive: sidekick.ArchivePolicy{Enabled: true, RetentionDays: 7},
-			WoWDirectories: map[string]sidekick.WoWDirectoryConfig{
-				sidekick.DirectoryID(vanilla): {GameFormat: sidekick.GameFormatVanilla112a, AutoUpload: sidekick.AutoUploadOnGameExit},
-				sidekick.DirectoryID(tbc):     {GameFormat: sidekick.GameFormatTBC243, AutoUpload: sidekick.AutoUploadOnGameExit},
-			},
+		s.WoWLogFormats = map[string]logformat.LogFormat{
+			sidekick.DirectoryID(vanilla): logformat.LogFormat112aCcAddon,
+			sidekick.DirectoryID(tbc):     logformat.LogFormat243CcAddon,
 		}
 	}))
 
