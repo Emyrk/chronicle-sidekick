@@ -100,8 +100,6 @@ func (a *app) onReady(ctx context.Context) {
 	a.items.connect.Hide()
 	a.items.cancelConnect = systray.AddMenuItem("Cancel connection", "Cancel the current browser sign-in and start over")
 	a.items.cancelConnect.Hide()
-	a.items.disconnect = systray.AddMenuItem("Disconnect", "Forget this computer's Chronicle sign-in")
-	a.items.disconnect.Hide()
 	a.items.update = systray.AddMenuItem("Update available", "")
 	a.items.update.Hide()
 	a.items.forceUpdate = systray.AddMenuItem("Force update now…", "Download, verify, and reinstall the latest release")
@@ -123,6 +121,8 @@ func (a *app) onReady(ctx context.Context) {
 	detectFolders := systray.AddMenuItem("Run automatic WoW detection…", "Scan common install locations and add any WoW folders found")
 	login := systray.AddMenuItemCheckbox("Start at login", "", autostart.Enabled())
 	systray.AddSeparator()
+	a.items.disconnect = systray.AddMenuItem("Disconnect", "Forget this computer's Chronicle sign-in")
+	a.items.disconnect.Hide()
 	quit := systray.AddMenuItem("Quit", "")
 
 	a.mu.Lock()
