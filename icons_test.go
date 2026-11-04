@@ -23,23 +23,25 @@ func nrgbaAt(img image.Image, x, y int) color.NRGBA {
 
 // checkIcon asserts that the platform logo remains intact and the state is
 // carried by a bright, dark-outlined dot.
-func checkIcon(t *testing.T, s engine.State, img image.Image, body image.Image, robot image.Image, foreground color.NRGBA, msg string) {
+func checkIcon(t *testing.T, s engine.State, img image.Image, body image.Image, mark image.Image, foreground color.NRGBA, msg string) {
 	t.Helper()
 	outer, inner := statusDotMasks(img.Bounds())
-	robotPixels, bodyPixels, outlinePixels, statePixels := 0, 0, 0, 0
-	b := robot.Bounds()
+	markPixels, bodyPixels, outlinePixels, statePixels := 0, 0, 0, 0
+	b := mark.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
 			bodyPixel := nrgbaAt(body, x, y)
-			robotPixel := nrgbaAt(robot, x, y)
+			markPixel := nrgbaAt(mark, x, y)
 			iconPixel := nrgbaAt(img, x, y)
 			outerAlpha := outer.AlphaAt(x, y).A
 			innerAlpha := inner.AlphaAt(x, y).A
-			if robotPixel.A == 255 && outerAlpha == 0 {
-				robotPixels++
-				require.Equal(t, foreground, iconPixel, "%s: robot pixel (%d,%d)", msg, x, y)
+			if markPixel.A > 0 && outerAlpha == 0 {
+				markPixels++
+				require.Equal(t, foreground.R, iconPixel.R, "%s: mark red channel (%d,%d)", msg, x, y)
+				require.Equal(t, foreground.G, iconPixel.G, "%s: mark green channel (%d,%d)", msg, x, y)
+				require.Equal(t, foreground.B, iconPixel.B, "%s: mark blue channel (%d,%d)", msg, x, y)
 			}
-			if bodyPixel.A == 255 && robotPixel.A == 0 && outerAlpha == 0 {
+			if bodyPixel.A > 0 && markPixel.A == 0 && outerAlpha == 0 {
 				bodyPixels++
 			}
 			if outerAlpha > innerAlpha {
@@ -51,8 +53,8 @@ func checkIcon(t *testing.T, s engine.State, img image.Image, body image.Image, 
 			}
 		}
 	}
-	require.NotZero(t, robotPixels, "%s: no opaque robot pixel", msg)
-	require.NotZero(t, bodyPixels, "%s: no opaque arrow pixel", msg)
+	require.NotZero(t, markPixels, "%s: no visible mark pixel", msg)
+	require.NotZero(t, bodyPixels, "%s: no visible branded C pixel", msg)
 	require.NotZero(t, outlinePixels, "%s: no opaque dot outline pixel", msg)
 	require.NotZero(t, statePixels, "%s: no opaque state dot pixel", msg)
 }

@@ -29,9 +29,9 @@ func TestEncodeDeterministicAndDecodable(t *testing.T) {
 	require.Equal(t, img.Pix, nrgba.Pix)
 }
 
-func TestLogoMarkMaskAndBodyAreSeparate(t *testing.T) {
+func TestThreeDotMarkAndBrandedCAreSeparate(t *testing.T) {
 	t.Parallel()
-	l := loadLogo("../../icons/tray_logo_original.webp")
+	l := loadLogo("../../branding/SidekickLogo.png")
 	mask := l.renderMarkMask(36)
 	body := l.renderBody(36, color.NRGBA{R: 0x2b, G: 0x2b, B: 0x2b, A: 255})
 	markPixels, bodyPixels := 0, 0

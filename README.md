@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://chronicleclassic.com">
-    <img src="packaging/chronicle-logo.png" alt="Chronicle logo" width="160">
+    <img src="branding/SidekickLogo.png" alt="Chronicle Sidekick logo" width="160">
   </a>
   <h1>Chronicle Sidekick</h1>
   <p>A small tray app that sends Classic World of Warcraft combat logs to the right Chronicle community.</p>

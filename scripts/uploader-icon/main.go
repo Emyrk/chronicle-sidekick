@@ -1,10 +1,10 @@
-// Command uploader-icon renders the supplied Chronicle tray artwork into the
-// committed platform assets. The gold arrows remain static, while the robot is
-// emitted as an alpha mask that Sidekick tints with its current state colour.
+// Command uploader-icon renders the canonical Chronicle Sidekick logo into the
+// committed platform tray assets. The branded C is emitted as the static body,
+// while the three-dot mark is emitted as an alpha mask.
 //
 // Output is deterministic so re-running the command is a no-op.
 //
-// Usage: go run ./scripts/uploader-icon <logo.webp> <tray-dir>
+// Usage: go run ./scripts/uploader-icon <logo.png> <tray-dir>
 package main
 
 import (
@@ -20,10 +20,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-var (
-	artworkCrop = image.Rect(238, 214, 998, 974)
-	gold        = color.NRGBA{R: 0xd7, G: 0xb6, B: 0x6f, A: 255}
-)
+var gold = color.NRGBA{R: 0xd7, G: 0xb6, B: 0x6f, A: 255}
 
 type logo struct {
 	img *image.NRGBA
@@ -40,31 +37,37 @@ func loadLogo(path string) *logo {
 		log.Fatal(err)
 	}
 	bounds := decoded.Bounds()
+	if bounds.Dx() != bounds.Dy() {
+		log.Fatalf("tray artwork must be square, got %v", bounds)
+	}
 	img := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	for y := 0; y < bounds.Dy(); y++ {
 		for x := 0; x < bounds.Dx(); x++ {
 			img.Set(x, y, decoded.At(bounds.Min.X+x, bounds.Min.Y+y))
 		}
 	}
-	if !artworkCrop.In(img.Bounds()) {
-		log.Fatalf("tray artwork is %v, need at least %v", img.Bounds(), artworkCrop)
-	}
 	return &logo{img: img}
 }
 
-// logoAmount separates the bright gold artwork from its charcoal background.
-// The wide ramp retains antialiasing while dropping the source background.
+// logoAmount separates the gold artwork from its charcoal background. The wide
+// ramp retains antialiasing while dropping the source background.
 func logoAmount(c color.NRGBA) float64 {
 	luma := (0.2126*float64(c.R) + 0.7152*float64(c.G) + 0.0722*float64(c.B)) / 255
 	return math.Max(0, math.Min(1, (luma-0.27)/0.24)) * float64(c.A) / 255
 }
 
-// robotRegion isolates the robot from the surrounding arrows. Two rectangles
-// avoid catching the arrow ring around the antenna and body corners.
-func robotRegion(x, y int) bool {
-	body := x >= 408 && x <= 848 && y >= 494 && y <= 769
-	antenna := x >= 568 && x <= 688 && y >= 379 && y <= 524
-	return body || antenna
+// markRegion isolates the three circles from the branded Chronicle C. Values
+// are normalized to the canonical 512 px artwork so the renderer remains
+// deterministic if a larger square export is supplied later.
+func markRegion(x, y, size int) bool {
+	px := float64(x) * 512 / float64(size)
+	py := float64(y) * 512 / float64(size)
+	for _, dot := range []struct{ x, y float64 }{{256, 210}, {211, 292}, {301, 292}} {
+		if math.Hypot(px-dot.x, py-dot.y) <= 40 {
+			return true
+		}
+	}
+	return false
 }
 
 const samples = 8
@@ -79,6 +82,7 @@ func (l *logo) renderMarkMask(size int) *image.NRGBA {
 
 func (l *logo) render(size int, mark bool, fill color.NRGBA) *image.NRGBA {
 	out := image.NewNRGBA(image.Rect(0, 0, size, size))
+	sourceSize := l.img.Bounds().Dx()
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			var alpha float64
@@ -86,9 +90,12 @@ func (l *logo) render(size int, mark bool, fill color.NRGBA) *image.NRGBA {
 				for sx := 0; sx < samples; sx++ {
 					u := (float64(x) + (float64(sx)+0.5)/samples) / float64(size)
 					v := (float64(y) + (float64(sy)+0.5)/samples) / float64(size)
-					px := min(artworkCrop.Min.X+int(u*float64(artworkCrop.Dx())), artworkCrop.Max.X-1)
-					py := min(artworkCrop.Min.Y+int(v*float64(artworkCrop.Dy())), artworkCrop.Max.Y-1)
-					if robotRegion(px, py) == mark {
+					px := min(int(u*float64(sourceSize)), sourceSize-1)
+					py := min(int(v*float64(sourceSize)), sourceSize-1)
+					isMark := markRegion(px, py, sourceSize)
+					if mark && isMark {
+						alpha++
+					} else if !mark && !isMark {
 						alpha += logoAmount(l.img.NRGBAAt(px, py))
 					}
 				}
@@ -112,7 +119,7 @@ func encode(img image.Image) []byte {
 
 func main() {
 	if len(os.Args) != 3 {
-		log.Fatal("usage: uploader-icon <logo.webp> <tray-dir>")
+		log.Fatal("usage: uploader-icon <logo.png> <tray-dir>")
 	}
 	l := loadLogo(os.Args[1])
 	trayDir := os.Args[2]
