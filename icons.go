@@ -1,7 +1,8 @@
 package main
 
-//go:generate go run ./scripts/uploader-icon icons/tray_logo_original.webp icons
-//go:generate go run ./scripts/windows-icon packaging/chronicle-logo.png packaging/AppIcon.ico
+//go:generate go run ./scripts/uploader-icon branding/SidekickLogo.png icons
+//go:generate go run ./scripts/windows-icon branding/SidekickLogo.png packaging/AppIcon.ico
+//go:generate go run ./scripts/macos-icon branding/SidekickLogo.png packaging/AppIcon.icns
 //go:generate go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico packaging/AppIcon.ico -o rsrc_windows_amd64.syso
 //go:generate go run github.com/akavel/rsrc@v0.10.2 -arch arm64 -ico packaging/AppIcon.ico -o rsrc_windows_arm64.syso
 
@@ -18,9 +19,9 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 )
 
-// The logo bodies and mark masks are rendered from icons/tray_logo_original.webp
-// (go generate). The mask is white with alpha; it is tinted with the state colour
-// and composited over the gold arrows.
+// The branded Chronicle C and three-dot mark are rendered from
+// branding/SidekickLogo.png (go generate). The mark mask is white with alpha;
+// it is tinted gold and composited over the C before the state indicator is added.
 var (
 	//go:embed icons/logo_black_36.png
 	logoBlack []byte // macOS body for a light menu bar, 36 px = 18 pt @2x
@@ -109,10 +110,10 @@ func buildIcons(s engine.State, dark bool) []sizedPNG {
 
 func composeIcon(bodyPNG, maskPNG []byte, foreground, state color.NRGBA) *image.NRGBA {
 	body := decodePNG(bodyPNG)
-	robot := decodePNG(maskPNG)
+	mark := decodePNG(maskPNG)
 	dst := image.NewNRGBA(body.Bounds())
 	draw.Draw(dst, dst.Bounds(), body, image.Point{}, draw.Src)
-	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(foreground), image.Point{}, robot, image.Point{}, draw.Over)
+	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(foreground), image.Point{}, mark, image.Point{}, draw.Over)
 	outer, inner := statusDotMasks(body.Bounds())
 	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(color.NRGBA{R: 0x20, G: 0x21, B: 0x24, A: 0xff}), image.Point{}, outer, image.Point{}, draw.Over)
 	draw.DrawMask(dst, dst.Bounds(), image.NewUniform(state), image.Point{}, inner, image.Point{}, draw.Over)
