@@ -105,6 +105,14 @@ func ChronicleCustomLogGlobs(dir string) []string {
 const classic1142Build = "1.14.2.42597"
 
 func detectedLogFormat(dir string) logformat.LogFormat {
+	// Forever identifies itself as wowf even when its directory is renamed.
+	// Check the product before shared .build.info, which may describe another client.
+	if body, err := os.ReadFile(filepath.Join(dir, ".flavor.info")); err == nil {
+		lines := strings.Split(string(body), "\n")
+		if len(lines) > 1 && strings.TrimSpace(lines[1]) == "wowf" {
+			return logformat.LogFormatV22Cleu
+		}
+	}
 	for _, buildInfo := range []string{
 		filepath.Join(dir, ".build.info"),
 		filepath.Join(filepath.Dir(dir), ".build.info"),

@@ -26,5 +26,6 @@ func TestSidekickFormats(t *testing.T) {
 		require.True(t, format.ValidSidekick())
 		require.NotEqual(t, "Unknown", format.Label())
 	}
-	require.False(t, logformat.LogFormatV22Cleu.ValidSidekick())
+	require.True(t, logformat.LogFormatV22Cleu.ValidSidekick())
+	require.False(t, logformat.LogFormatV9Cleu.ValidSidekick())
 }

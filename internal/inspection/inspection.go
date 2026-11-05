@@ -57,6 +57,8 @@ type requirement struct {
 }
 
 var profiles = map[logformat.LogFormat][]requirement{
+	// Forever writes native CLEU logs without requiring an addon or injected DLL.
+	logformat.LogFormatV22Cleu: {},
 	logformat.LogFormat112aCcAddon: {
 		{id: "addon.chronicle_companion", category: CategoryAddon, name: "ChronicleCompanion", required: true},
 		{id: "dll.nampower", category: CategoryDLL, name: "nampower.dll", required: true},

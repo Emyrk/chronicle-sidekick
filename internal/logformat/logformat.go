@@ -20,6 +20,7 @@ const (
 // SidekickFormats lists the formats Sidekick can currently upload.
 func SidekickFormats() []LogFormat {
 	return []LogFormat{
+		LogFormatV22Cleu,
 		LogFormat112aCcAddon,
 		LogFormatHermesproxy1142Cc,
 		LogFormat243CcAddon,
@@ -46,6 +47,8 @@ func (f LogFormat) IncludesSidekickStorage() bool {
 // Label returns the client name shown in Sidekick's UI.
 func (f LogFormat) Label() string {
 	switch f {
+	case LogFormatV22Cleu:
+		return "WoW Forever"
 	case LogFormat112aCcAddon:
 		return "Vanilla 1.12a"
 	case LogFormatHermesproxy1142Cc:

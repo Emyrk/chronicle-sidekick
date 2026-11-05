@@ -95,6 +95,7 @@ func DefaultConfig() SidekickConfig {
 // AutoUploadCapabilities lists the implementations in this Sidekick build.
 func AutoUploadCapabilities() map[logformat.LogFormat][]AutoUploadMode {
 	return map[logformat.LogFormat][]AutoUploadMode{
+		logformat.LogFormatV22Cleu:           {AutoUploadOnGameExit},
 		logformat.LogFormat112aCcAddon:       {AutoUploadOnGameExit},
 		logformat.LogFormatHermesproxy1142Cc: {AutoUploadOnGameExit},
 		logformat.LogFormat243CcAddon:        {AutoUploadOnGameExit},

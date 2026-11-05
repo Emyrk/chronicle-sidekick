@@ -533,7 +533,9 @@ func TestSetLogFormatPersistsLocalSelection(t *testing.T) {
 
 	require.NoError(t, a.setLogFormat(install, logformat.LogFormat243CcAddon))
 	require.Equal(t, logformat.LogFormat243CcAddon, st.Get().WoWLogFormats[sidekick.DirectoryID(install.Dir)])
-	require.Error(t, a.setLogFormat(install, logformat.LogFormatV22Cleu))
+	require.NoError(t, a.setLogFormat(install, logformat.LogFormatV22Cleu))
+	require.Equal(t, logformat.LogFormatV22Cleu, st.Get().WoWLogFormats[sidekick.DirectoryID(install.Dir)])
+	require.Error(t, a.setLogFormat(install, logformat.LogFormatV9Cleu))
 }
 
 func TestWoWFolderSites(t *testing.T) {
@@ -668,4 +670,21 @@ func fakeLegacyInstall(t *testing.T, root, name, realmlist string) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "Logs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "realmlist.wtf"), []byte("set realmlist "+realmlist+"\n"), 0o644))
 	return dir
+}
+
+func TestForeverFormatIntegration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".flavor.info"), []byte("Product Flavor!STRING:0\nwowf\n"), 0o644))
+	installs, err := wowdir.Resolve(dir, tenant.DefaultLayout)
+	require.NoError(t, err)
+	st := store.State{}
+	rememberDetectedLogFormats(&st, installs)
+	require.Equal(t, logformat.LogFormatV22Cleu, st.WoWLogFormats[sidekick.DirectoryID(dir)])
+	status := sidekickStatus(installs, st.WoWLogFormats, nil, "windows/amd64", "test", false)
+	require.Equal(t, tenant.ForeverBaseURL, status.WoWDirectories[0].TenantBaseURL)
+	require.Equal(t, logformat.LogFormatV22Cleu, status.WoWDirectories[0].LogFormat)
+	require.Equal(t, inspection.StatusReady, status.WoWDirectories[0].Inspection.Status)
+	require.Contains(t, status.AutoUploadCapabilities[logformat.LogFormatV22Cleu], sidekick.AutoUploadOnGameExit)
+	require.False(t, logformat.LogFormatV22Cleu.IncludesSidekickStorage())
 }

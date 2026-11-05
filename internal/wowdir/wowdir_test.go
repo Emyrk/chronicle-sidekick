@@ -154,3 +154,30 @@ func TestResolveRejectsUnknownRealm(t *testing.T) {
 	require.ErrorAs(t, err, &unsupported)
 	require.Equal(t, "unknown.example", unsupported.Host)
 }
+
+func TestDetectsForeverProduct(t *testing.T) {
+	t.Parallel()
+	for _, flavor := range []string{"_forever_", "_renamed_forever_"} {
+		t.Run(flavor, func(t *testing.T) {
+			root := fakeInstall(t, flavor)
+			dir := filepath.Join(root, flavor)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".flavor.info"), []byte("Product Flavor!STRING:0:\r\nwowf\r\n"), 0o644))
+			// A neighboring Hermes client must not override Forever's product.
+			require.NoError(t, os.WriteFile(filepath.Join(root, ".build.info"), []byte("Version!STRING:0|Product!STRING:0\n1.14.2.42597|wow_classic_era\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "HermesProxy.config"), []byte(`<add key="ServerAddress" value="login2.twinstar-wow.com" />`), 0o644))
+
+			got := wowdir.Detect([]string{root, dir}, tenant.DefaultLayout)
+			require.Len(t, got, 1)
+			require.Equal(t, tenant.ForeverBaseURL, got[0].BaseURL)
+			require.Equal(t, logformat.LogFormatV22Cleu, got[0].DetectedLogFormat)
+			require.Empty(t, got[0].Realmlist)
+			require.Equal(t, wowdir.WoWCombatLogGlobs(dir), got[0].LogGlobs)
+
+			for _, path := range []string{root, dir, filepath.Join(dir, "Logs"), filepath.Join(dir, "Wow.exe")} {
+				resolved, err := wowdir.Resolve(path, tenant.DefaultLayout)
+				require.NoError(t, err)
+				require.Equal(t, got, resolved)
+			}
+		})
+	}
+}

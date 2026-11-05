@@ -169,6 +169,13 @@ the first underscore, such as `_Thrall.txt`, is persisted with the archive
 group. A later session appends only to the recent group with the same suffix,
 so characters in one installation retain independent Chronicle log groups.
 
+For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
+(typically under `_forever_`), routes uploads to
+`https://forever.chronicleclassic.com`, and selects `v22-cleu`. This takes
+precedence over shared `.build.info` metadata for other installed clients.
+It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit without
+requiring a companion addon or Sidekick storage artifact.
+
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
 `Logs/WoWCombatLog*.txt` files and uploads with Chronicle parser format
 `hermesproxy_1_14_2_cc`. Sidekick detects this format when the active
