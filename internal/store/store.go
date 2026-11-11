@@ -43,6 +43,11 @@ type State struct {
 	WoWPathsSet bool `json:"wow_paths_set,omitempty"`
 	// Config is the last valid server-managed config applied by Sidekick.
 	Config sidekick.SidekickConfig `json:"config,omitempty"`
+	// StartAtLoginInitialized records that Sidekick handled its start-at-login
+	// default or migrated an existing installation. The operating-system entry
+	// remains the source of truth, so users can disable it without Sidekick
+	// turning it back on.
+	StartAtLoginInitialized bool `json:"start_at_login_initialized,omitempty"`
 	// Uploaded maps a log path to the size that has been uploaded.
 	Uploaded map[string]int64 `json:"uploaded,omitempty"`
 	// ArchiveGroups persist uploaded log groups until their retained files can

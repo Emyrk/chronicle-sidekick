@@ -26,6 +26,65 @@ import (
 	"github.com/Emyrk/chronicle-sidekick/internal/wowdir"
 )
 
+func TestEnsureStartAtLoginDefaultAppliesOnce(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.Open(path)
+	require.NoError(t, err)
+
+	calls := 0
+	set := func(enabled bool, exe string) error {
+		calls++
+		require.True(t, enabled)
+		require.Equal(t, "/opt/Chronicle Sidekick", exe)
+		return nil
+	}
+	executable := func() (string, error) { return "/opt/Chronicle Sidekick", nil }
+
+	require.NoError(t, ensureStartAtLoginDefault(st, true, executable, set))
+	require.True(t, st.Get().StartAtLoginInitialized)
+	require.Equal(t, 1, calls)
+
+	require.NoError(t, ensureStartAtLoginDefault(st, true, executable, set))
+	require.Equal(t, 1, calls)
+
+	again, err := store.Open(path)
+	require.NoError(t, err)
+	require.True(t, again.Get().StartAtLoginInitialized)
+}
+
+func TestEnsureStartAtLoginDefaultPreservesExistingInstallPreference(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+
+	called := false
+	require.NoError(t, ensureStartAtLoginDefault(st, false,
+		func() (string, error) { return "/opt/sidekick", nil },
+		func(bool, string) error {
+			called = true
+			return nil
+		},
+	))
+	require.False(t, called)
+	require.True(t, st.Get().StartAtLoginInitialized)
+}
+
+func TestEnsureStartAtLoginDefaultRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+	executable := func() (string, error) { return "/opt/sidekick", nil }
+
+	require.Error(t, ensureStartAtLoginDefault(st, true, executable, func(bool, string) error {
+		return errors.New("autostart unavailable")
+	}))
+	require.False(t, st.Get().StartAtLoginInitialized)
+
+	require.NoError(t, ensureStartAtLoginDefault(st, true, executable, func(bool, string) error { return nil }))
+	require.True(t, st.Get().StartAtLoginInitialized)
+}
+
 func TestStateDebugSequence(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, 3*time.Second, stateDebugInterval)
@@ -192,6 +251,7 @@ func TestAutoUploadTriggerDefaultsToOnGameExit(t *testing.T) {
 		s.WoWPaths = []string{dir}
 		s.WoWPathsSet = true
 		s.WoWLogFormats = map[string]logformat.LogFormat{directoryID: logformat.LogFormat112aCcAddon}
+		s.Config = sidekick.DefaultConfig()
 	}))
 	a := &app{store: st, layout: tenant.DefaultLayout}
 

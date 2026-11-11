@@ -914,6 +914,24 @@ func pairingStatus(code string) string {
 	return fmt.Sprintf("Code %s: approve in your browser…", code)
 }
 
+func ensureStartAtLoginDefault(st *store.Store, newState bool, executable func() (string, error), set func(bool, string) error) error {
+	if st.Get().StartAtLoginInitialized {
+		return nil
+	}
+	if newState {
+		exe, err := executable()
+		if err != nil {
+			return err
+		}
+		if err := set(true, exe); err != nil {
+			return err
+		}
+	}
+	return st.Update(func(s *store.State) {
+		s.StartAtLoginInitialized = true
+	})
+}
+
 // startup confirms interactive launches and refreshes existing login entries so
 // future automatic starts remain quiet.
 func (a *app) startup(ctx context.Context) {

@@ -11,7 +11,7 @@
   </p>
 </div>
 
-Sidekick runs on macOS, Windows, and Linux. Add one or more WoW folders, then select **Upload now**. Each folder's `realmlist.wtf` routes its logs to the correct Chronicle site, using one Chronicle sign-in across all supported communities.
+Sidekick runs on macOS, Windows, and Linux. It starts at login by default and automatically uploads supported combat logs after WoW exits. You can disable start-at-login from the tray menu and manage automatic uploads through **View Settings…**. Each folder's `realmlist.wtf` routes its logs to the correct Chronicle site, using one Chronicle sign-in across all supported communities.
 
 | WoW client | Combat logs | Communities |
 | --- | --- | --- |

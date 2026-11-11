@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/autostart"
 	"github.com/Emyrk/chronicle-sidekick/internal/engine"
 	"github.com/Emyrk/chronicle-sidekick/internal/inspection"
 	"github.com/Emyrk/chronicle-sidekick/internal/logformat"
@@ -83,7 +84,10 @@ func run() error {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	st, err := store.Open(filepath.Join(dir, "state.json"))
+	statePath := filepath.Join(dir, "state.json")
+	_, stateErr := os.Stat(statePath)
+	newState := errors.Is(stateErr, os.ErrNotExist)
+	st, err := store.Open(statePath)
 	if err != nil {
 		return fmt.Errorf("open state: %w", err)
 	}
@@ -104,6 +108,12 @@ func run() error {
 		logger = slog.New(slog.NewTextHandler(w, nil))
 	} else {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+
+	if !*stateDebug {
+		if err := ensureStartAtLoginDefault(st, newState, os.Executable, autostart.Set); err != nil {
+			logger.Warn("enable start at login by default", "err", err)
+		}
 	}
 
 	if *devToken != "" {
