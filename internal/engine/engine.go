@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/foreverscouting"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
@@ -67,6 +68,9 @@ type Config struct {
 	// CaptureSidekickStorage reports whether this install uses the optional
 	// ChronicleSidekickBridge SavedVariables artifact.
 	CaptureSidekickStorage func(wowdir.Install) bool
+	// CaptureForeverScouting reports whether this install uses the optional
+	// ChronicleCompanionForever scouting artifact.
+	CaptureForeverScouting func(wowdir.Install) bool
 	// AppendGroupKey identifies an independently appended stream within one
 	// install. Empty keeps the install-wide grouping used by standard clients.
 	AppendGroupKey func(wowdir.Install, string) string
@@ -121,6 +125,7 @@ type UploadRequest struct {
 	Size                int64
 	Fast                bool
 	SidekickStoragePath string
+	ForeverScoutingPath string
 	AppendLogID         string
 	UploadID            string
 	ChunkSequence       int
@@ -181,6 +186,7 @@ type job struct {
 	queuedAt       time.Time
 	snapshotPath   string
 	storagePath    string
+	scoutingPath   string
 	groupID        string
 	appendLogID    string
 	uploadID       string
@@ -256,13 +262,15 @@ func (e *Engine) restorePendingArchives(st store.State) {
 		if !group.Pending || failedAddonGroup[group.ID] {
 			continue
 		}
-		var combatPath, storagePath string
+		var combatPath, storagePath, scoutingPath string
 		for _, path := range group.Files {
 			if _, err := os.Stat(path); err != nil {
 				continue
 			}
 			if filepath.Base(path) == "ChronicleSidekickBridgeWoTLK.lua" {
 				storagePath = path
+			} else if filepath.Base(path) == foreverscouting.Filename {
+				scoutingPath = path
 			} else if strings.HasSuffix(filepath.Base(path), "_CombatLog.txt") {
 				combatPath = path
 			}
@@ -287,7 +295,7 @@ func (e *Engine) restorePendingArchives(st store.State) {
 		j := job{
 			path: combatPath, size: info.Size(), baseURL: install.BaseURL, install: install,
 			queuedAt: group.CreatedAt, exitedAt: group.LastExitAt,
-			snapshotPath: combatPath, storagePath: storagePath, groupID: group.ID,
+			snapshotPath: combatPath, storagePath: storagePath, scoutingPath: scoutingPath, groupID: group.ID,
 			addonRequestID: requestByGroup[group.ID], sourceRemoved: true,
 		}
 		if j.addonRequestID != "" {
@@ -811,6 +819,22 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 		storagePath = filepath.Join(dir, filepath.Base(sidecarSource))
 		group.Files = append(group.Files, storagePath)
 	}
+	scoutingPath := ""
+	if e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(j.install) {
+		var warnings []foreverscouting.Warning
+		var scoutingErr error
+		scoutingPath, warnings, scoutingErr = foreverscouting.Write(j.install.Dir, filepath.Join(dir, foreverscouting.Filename))
+		for _, warning := range warnings {
+			e.cfg.Logger.Warn("skipping optional Forever scouting source", "file", warning.Path, "err", warning.Err)
+		}
+		if scoutingErr != nil {
+			e.cfg.Logger.Warn("creating optional Forever scouting artifact", "err", scoutingErr)
+			scoutingPath = ""
+		}
+		if scoutingPath != "" {
+			group.Files = append(group.Files, scoutingPath)
+		}
+	}
 	if err := e.cfg.Store.Update(func(s *store.State) {
 		if s.ArchiveGroups == nil {
 			s.ArchiveGroups = map[string]store.ArchiveGroup{}
@@ -857,6 +881,7 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	}
 	j.snapshotPath = combatPath
 	j.storagePath = storagePath
+	j.scoutingPath = scoutingPath
 	j.groupID = group.ID
 	if appendExisting {
 		j.appendLogID = group.LogID
@@ -1005,7 +1030,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 
 		res, err := e.cfg.Upload(ctx, token, UploadRequest{
 			BaseURL: j.baseURL, Path: j.snapshotPath, SourceID: src, Size: j.size, Fast: fast,
-			SidekickStoragePath: j.storagePath, AppendLogID: j.appendLogID,
+			SidekickStoragePath: j.storagePath, ForeverScoutingPath: j.scoutingPath, AppendLogID: j.appendLogID,
 			UploadID: j.uploadID, ChunkSequence: j.sequence,
 		})
 		var serverErr *upload.Error

@@ -173,8 +173,11 @@ For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
 (typically under `_forever_`), routes uploads to
 `https://forever.chronicleclassic.com`, and selects `v22-cleu`. This takes
 precedence over shared `.build.info` metadata for other installed clients.
-It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit without
-requiring a companion addon or Sidekick storage artifact.
+It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. When
+ChronicleCompanionForever has non-empty scouting data, Sidekick also sends the
+distinct `forever_scouting` JSON artifact defined in
+[`forever-scouting-artifact-v1.md`](forever-scouting-artifact-v1.md). Forever
+does not use the Wrath `sidekick_storage` field.
 
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
 `Logs/WoWCombatLog*.txt` files and uploads with Chronicle parser format

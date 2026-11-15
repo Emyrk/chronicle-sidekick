@@ -724,6 +724,28 @@ func TestInstallsReadsLegacySingleWoWPath(t *testing.T) {
 	require.Equal(t, octo, got[0].Dir)
 }
 
+func TestCaptureForeverScoutingUsesOnlyV22Format(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "state.json"))
+	require.NoError(t, err)
+	install := wowdir.Install{Dir: filepath.Join(root, "wow")}
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWLogFormats = map[string]logformat.LogFormat{
+			sidekick.DirectoryID(install.Dir): logformat.LogFormatV22Cleu,
+		}
+	}))
+	a := &app{store: st}
+	require.True(t, a.captureForeverScouting(install))
+	require.False(t, a.captureSidekickStorage(install))
+
+	require.NoError(t, st.Update(func(s *store.State) {
+		s.WoWLogFormats[sidekick.DirectoryID(install.Dir)] = logformat.LogFormat335aCcAddon
+	}))
+	require.False(t, a.captureForeverScouting(install))
+	require.True(t, a.captureSidekickStorage(install))
+}
+
 func fakeLegacyInstall(t *testing.T, root, name, realmlist string) string {
 	t.Helper()
 	dir := filepath.Join(root, name)
