@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"time"
 )
 
 const (
@@ -38,9 +38,15 @@ type Warning struct {
 
 func (w Warning) Error() string { return fmt.Sprintf("%s: %v", w.Path, w.Err) }
 
-// Build discovers every regular, non-symlink Forever SavedVariables source.
-// Invalid files are returned as warnings and do not prevent other accounts.
+// Build captures only the newest regular, non-symlink Forever SavedVariables
+// source by modification time, breaking ties by account/source ascending. Selection
+// precedes parsing: empty or invalid collections never fall back to older accounts.
 func Build(root string) (Envelope, []Warning, error) {
+	return build(root, "")
+}
+
+// selectedPath pins recapture to the account selected at the start of a drain.
+func build(root, selectedPath string) (Envelope, []Warning, error) {
 	envelope := Envelope{SchemaVersion: 1, Kind: Kind, Sources: []Source{}}
 	accountRoot := filepath.Join(root, "WTF", "Account")
 	entries, err := os.ReadDir(accountRoot)
@@ -51,6 +57,8 @@ func Build(root string) (Envelope, []Warning, error) {
 		return envelope, nil, err
 	}
 	var warnings []Warning
+	var selected Source
+	var newest time.Time
 	for _, entry := range entries {
 		account := entry.Name()
 		accountDir := filepath.Join(accountRoot, account)
@@ -89,37 +97,37 @@ func Build(root string) (Envelope, []Warning, error) {
 			warnings = append(warnings, Warning{path, errors.New("source is not a regular file")})
 			continue
 		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			warnings = append(warnings, Warning{path, err})
+		if selectedPath != "" && path != selectedPath {
 			continue
 		}
-		span, present, err := Locate(body)
-		if err != nil {
-			warnings = append(warnings, Warning{path, err})
-			continue
+		source := filepath.ToSlash(filepath.Join("WTF", "Account", account, "SavedVariables", "ChronicleCompanionForever.lua"))
+		if selected.path == "" || info.ModTime().After(newest) ||
+			(info.ModTime().Equal(newest) && (account < selected.Account || (account == selected.Account && source < selected.Source))) {
+			selected = Source{Account: account, Source: source, path: path}
+			newest = info.ModTime()
 		}
-		if !present {
-			continue
-		}
-		envelope.Sources = append(envelope.Sources, Source{
-			Account:        account,
-			Source:         filepath.ToSlash(filepath.Join("WTF", "Account", account, "SavedVariables", "ChronicleCompanionForever.lua")),
-			CollectionsLua: string(body[span.Start:span.End]),
-			path:           path, body: body, span: span,
-		})
 	}
-	sort.Slice(envelope.Sources, func(i, j int) bool {
-		if envelope.Sources[i].Account != envelope.Sources[j].Account {
-			return envelope.Sources[i].Account < envelope.Sources[j].Account
-		}
-		return envelope.Sources[i].Source < envelope.Sources[j].Source
-	})
+	if selected.path == "" {
+		return envelope, warnings, nil
+	}
+	body, err := os.ReadFile(selected.path)
+	if err != nil {
+		return envelope, append(warnings, Warning{selected.path, err}), nil
+	}
+	span, present, err := Locate(body)
+	if err != nil {
+		return envelope, append(warnings, Warning{selected.path, err}), nil
+	}
+	if present {
+		selected.CollectionsLua = string(body[span.Start:span.End])
+		selected.body, selected.span = body, span
+		envelope.Sources = append(envelope.Sources, selected)
+	}
 	return envelope, warnings, nil
 }
 
-// Write builds and durably writes an artifact. It returns an empty path when no
-// account contains non-empty collections data.
+// Write builds and durably writes an artifact. It returns an empty path when
+// the newest account has no non-empty, valid collections data.
 func Write(root, path string) (string, []Warning, error) {
 	envelope, warnings, err := Build(root)
 	if err != nil || len(envelope.Sources) == 0 {
@@ -179,25 +187,20 @@ func WriteEnvelope(envelope Envelope, path string, warnings []Warning) (string, 
 }
 
 // Drain archives the latest complete collections before replacing only that value.
-// persist must durably retain the envelope and associate it with every batch log.
+// It selects one newest account and pins retries to that source, leaving all other
+// accounts untouched. persist must durably retain the envelope and associate it
+// with every batch log.
 // It is deliberately independent of process state: live clients may restore their
 // in-memory collections on their next flush. External writers cannot be locked.
 func Drain(root string, persist func(Envelope) error) ([]Warning, error) {
-	retained := map[string]Source{}
+	selectedPath := ""
 	for attempt := 0; attempt < 8; attempt++ {
-		envelope, warnings, err := Build(root)
+		envelope, warnings, err := build(root, selectedPath)
 		if err != nil || len(envelope.Sources) == 0 {
 			return warnings, err
 		}
-		for _, source := range envelope.Sources {
-			retained[source.Source] = source
-		}
-		archive := Envelope{SchemaVersion: 1, Kind: Kind}
-		for _, source := range retained {
-			archive.Sources = append(archive.Sources, source)
-		}
-		sort.Slice(archive.Sources, func(i, j int) bool { return archive.Sources[i].Source < archive.Sources[j].Source })
-		if err := persist(archive); err != nil {
+		selectedPath = envelope.Sources[0].path
+		if err := persist(envelope); err != nil {
 			return warnings, err
 		}
 		changed := false

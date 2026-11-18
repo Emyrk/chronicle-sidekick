@@ -41,7 +41,11 @@ The file must contain exactly one assignment to the global
 `ChronicleCompanionForeverDB`. Sidekick ignores missing files. It rejects
 symlinks and non-regular source files. The `account` value is the account
 directory basename. Sidekick does not combine or deduplicate player GUID maps
-across accounts.
+across accounts. Before reading or interpreting collections, Sidekick selects only
+the regular, non-symlink source with the newest filesystem modification time.
+Equal times are resolved by account, then source path, in ascending bytewise
+string order. If the selected file has missing, empty, or invalid collections,
+Sidekick omits the artifact without falling back to an older account.
 
 Sidekick validates the complete file as restricted, data-only Lua. It accepts
 nested tables, implicit numeric entries, bracketed quoted or numeric keys,
@@ -71,7 +75,8 @@ Fields have these meanings:
 
 - `schema_version` is the integer `1`.
 - `kind` is the exact string `sidekick-events`.
-- `sources` contains one entry for each account with non-empty collections data.
+- `sources` contains one entry for the selected newest account with non-empty,
+  valid collections data. The array shape is retained for schema compatibility.
 - `account` is the source account directory basename.
 - `source` is the slash-separated path relative to the Forever root.
 - `collections_lua` is the exact byte sequence of the validated `collections` table
@@ -79,8 +84,7 @@ Fields have these meanings:
   transport encoding only. Decoding the JSON string recovers the original Lua
   expression bytes.
 
-Sidekick sorts `sources` by `account`, then by `source`, using bytewise string
-ordering. Each account remains a separate entry.
+Sidekick never merges collections from different accounts.
 
 ## Omission and non-empty rules
 
@@ -109,7 +113,8 @@ Before cleanup Sidekick re-reads and validates the latest complete source. It
 syncs the combat-log archive, writes and syncs a new immutable JSON artifact for
 every affected log, then persists their exact archive associations. Only after
 all those steps succeed does it replace the captured `collections` value with
-`{}`. Unrelated bytes, comments, settings (including `sidekick_enabled`), and
+`{}` in the selected account only; all other accounts remain untouched.
+Unrelated bytes, comments, settings (including `sidekick_enabled`), and
 unknown fields outside `collections` are preserved. Earlier artifacts remain
 retained in the same archive group.
 
@@ -118,8 +123,9 @@ replacement. Rename is atomic where the platform/filesystem supports it; Go does
 not guarantee atomic rename on non-Unix platforms. Sidekick checks the full source bytes again immediately before replacement. A changed
 source is re-read, captured into another durable artifact, and retried, preserving
 the latest settings. Up to eight passes bound a continuously changing writer;
-failure leaves the latest unreset source in place and logs a warning. Captures
-from accounts already reset in an earlier pass remain in the batch artifact.
+failure leaves the latest unreset source in place and logs a warning. Recapture
+is pinned to the initially selected account for that drain, even if modification
+times change; it never moves on to an older account.
 Missing/empty logs, malformed sources, copy failures, artifact-write failures, and
 state-persistence failures never authorize a reset.
 

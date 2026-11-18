@@ -173,16 +173,21 @@ For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
 (typically under `_forever_`), routes uploads to
 `https://forever.chronicleclassic.com`, and selects `v22-cleu`. This takes
 precedence over shared `.build.info` metadata for other installed clients.
-It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. When
-ChronicleCompanionForever has non-empty `ChronicleCompanionForeverDB.collections`
+It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. Sidekick
+selects the newest regular, non-symlink `ChronicleCompanionForever.lua` across
+accounts by filesystem modification time before parsing collections, breaking
+equal-time ties by account/source path in ascending bytewise order. When that
+file has non-empty, valid `ChronicleCompanionForeverDB.collections`
 data, Sidekick also sends the distinct `forever_events` multipart JSON artifact defined in
 [`sidekick-events-artifact-v1.md`](sidekick-events-artifact-v1.md). Forever
-does not use the Wrath `sidekick_storage` field. This includes manual uploads
-and addon RPC archives. Once the log, complete `collections_lua` artifact, and
+does not use the Wrath `sidekick_storage` field. Missing, empty, or invalid
+collections in the newest file omit the artifact without falling back to older
+accounts. This policy includes manual uploads and addon RPC archives. Once the log, complete `collections_lua` artifact, and
 exact pending association are durably retained, Sidekick resets only the
-`collections` value to `{}`, even while WoW is running. Unrelated settings remain
-unchanged. Changed sources are recaptured before reset. Retries use immutable
-archives; combat-only deduplication never skips a collections artifact. See the
+selected account's `collections` value to `{}`, even while WoW is running. Other
+accounts and unrelated settings remain unchanged. Changed sources are recaptured
+from that same selected account before reset, without reselecting by mtime.
+Retries use immutable archives; combat-only deduplication never skips a collections artifact. See the
 artifact spec for failure handling and the live-writer race limitations.
 
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
