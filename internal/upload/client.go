@@ -149,6 +149,8 @@ type Client struct {
 	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included with
 	// both initial and append requests.
 	SidekickStoragePath string
+	// ForeverScoutingPath is an optional versioned WoW Forever collections artifact.
+	ForeverScoutingPath string
 	// Token returns the current bearer token ("" when signed out).
 	Token string
 	HTTP  *http.Client
@@ -201,11 +203,24 @@ func (c *Client) Upload(ctx context.Context, path, sourceID string, size int64) 
 		defer func() { _ = storageFile.Close() }()
 		storage = storageFile
 	}
+	var foreverScouting io.Reader
+	if c.ForeverScoutingPath != "" {
+		scoutingFile, err := os.Open(c.ForeverScoutingPath)
+		if err != nil {
+			return Result{}, err
+		}
+		defer func() { _ = scoutingFile.Close() }()
+		foreverScouting = scoutingFile
+	}
 
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 	go func() {
-		_ = pw.CloseWithError(writeForm(mw, f, size, filepath.Base(path), c.Fast, storage, filepath.Base(c.SidekickStoragePath)))
+		_ = pw.CloseWithError(writeForm(
+			mw, f, size, filepath.Base(path), c.Fast,
+			storage, filepath.Base(c.SidekickStoragePath),
+			foreverScouting, filepath.Base(c.ForeverScoutingPath),
+		))
 	}()
 
 	query := url.Values{}
@@ -448,7 +463,7 @@ func (c *Client) Have(ctx context.Context, sourceID string) (Have, error) {
 	return Have{}, &Error{Status: resp.StatusCode, Message: msg}
 }
 
-func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fast bool, storage io.Reader, storageName string) error {
+func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fast bool, storage io.Reader, storageName string, foreverScouting io.Reader, foreverScoutingName string) error {
 	// The ".gz" suffix is how the server knows the part is compressed.
 	h := textproto.MIMEHeader{}
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="combat_log"; filename="%s.gz"`, name))
@@ -480,6 +495,18 @@ func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fas
 			return err
 		}
 		if _, err := io.Copy(part, storage); err != nil {
+			return err
+		}
+	}
+	if foreverScouting != nil {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="forever_events"; filename="%s"`, foreverScoutingName))
+		h.Set("Content-Type", "application/json")
+		part, err := mw.CreatePart(h)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(part, foreverScouting); err != nil {
 			return err
 		}
 	}

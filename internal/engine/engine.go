@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Emyrk/chronicle-sidekick/internal/foreverscouting"
 	"github.com/Emyrk/chronicle-sidekick/internal/sidekick"
 	"github.com/Emyrk/chronicle-sidekick/internal/store"
 	"github.com/Emyrk/chronicle-sidekick/internal/upload"
@@ -67,6 +69,9 @@ type Config struct {
 	// CaptureSidekickStorage reports whether this install uses the optional
 	// ChronicleSidekickBridge SavedVariables artifact.
 	CaptureSidekickStorage func(wowdir.Install) bool
+	// CaptureForeverScouting reports whether this install uses the optional
+	// ChronicleCompanionForever collections artifact.
+	CaptureForeverScouting func(wowdir.Install) bool
 	// AppendGroupKey identifies an independently appended stream within one
 	// install. Empty keeps the install-wide grouping used by standard clients.
 	AppendGroupKey func(wowdir.Install, string) string
@@ -121,6 +126,7 @@ type UploadRequest struct {
 	Size                int64
 	Fast                bool
 	SidekickStoragePath string
+	ForeverScoutingPath string
 	AppendLogID         string
 	UploadID            string
 	ChunkSequence       int
@@ -171,22 +177,24 @@ type uploadRequest struct {
 
 // job is one log waiting to be (or being) uploaded.
 type job struct {
-	path           string
-	size           int64
-	baseURL        string
-	install        wowdir.Install
-	running        bool
-	startedAt      time.Time
-	exitedAt       time.Time
-	queuedAt       time.Time
-	snapshotPath   string
-	storagePath    string
-	groupID        string
-	appendLogID    string
-	uploadID       string
-	sequence       int
-	addonRequestID string
-	sourceRemoved  bool
+	path             string
+	size             int64
+	baseURL          string
+	install          wowdir.Install
+	running          bool
+	startedAt        time.Time
+	exitedAt         time.Time
+	queuedAt         time.Time
+	snapshotPath     string
+	storagePath      string
+	scoutingPath     string
+	collectionsReady bool
+	groupID          string
+	appendLogID      string
+	uploadID         string
+	sequence         int
+	addonRequestID   string
+	sourceRemoved    bool
 }
 
 const exitFinalizeAfter = 30 * time.Second
@@ -256,16 +264,23 @@ func (e *Engine) restorePendingArchives(st store.State) {
 		if !group.Pending || failedAddonGroup[group.ID] {
 			continue
 		}
-		var combatPath, storagePath string
+		var combatPath, storagePath, scoutingPath string
 		for _, path := range group.Files {
 			if _, err := os.Stat(path); err != nil {
 				continue
 			}
 			if filepath.Base(path) == "ChronicleSidekickBridgeWoTLK.lua" {
 				storagePath = path
+			} else if filepath.Base(path) == foreverscouting.Filename {
+				scoutingPath = path
 			} else if strings.HasSuffix(filepath.Base(path), "_CombatLog.txt") {
 				combatPath = path
 			}
+		}
+		if group.Snapshot != nil {
+			combatPath = group.Snapshot.CombatPath
+			storagePath = group.Snapshot.StoragePath
+			scoutingPath = group.Snapshot.CollectionsPath
 		}
 		if combatPath == "" {
 			continue
@@ -287,7 +302,7 @@ func (e *Engine) restorePendingArchives(st store.State) {
 		j := job{
 			path: combatPath, size: info.Size(), baseURL: install.BaseURL, install: install,
 			queuedAt: group.CreatedAt, exitedAt: group.LastExitAt,
-			snapshotPath: combatPath, storagePath: storagePath, groupID: group.ID,
+			snapshotPath: combatPath, storagePath: storagePath, scoutingPath: scoutingPath, groupID: group.ID,
 			addonRequestID: requestByGroup[group.ID], sourceRemoved: true,
 		}
 		if j.addonRequestID != "" {
@@ -352,16 +367,8 @@ func (e *Engine) requestUpload(dirs []string) {
 // UploadNow.
 func (e *Engine) TokenChanged() {
 	e.dirty.Store(true)
-	e.mu.Lock()
-	if len(e.blocked) > 0 {
-		e.pending = append(e.pending, e.blocked...)
-		e.blocked = nil
-		select {
-		case e.kick <- struct{}{}:
-		default:
-		}
-	}
-	e.mu.Unlock()
+	// The poll loop refreshes the cached token before releasing blocked jobs.
+	// Waking the worker here could let it consume them with the rejected token.
 	select {
 	case e.wake <- struct{}{}:
 	default:
@@ -742,8 +749,26 @@ func (e *Engine) worker(ctx context.Context) {
 			}
 			continue
 		}
-		j := e.pending[0]
-		e.pending = e.pending[1:]
+		// Prepare the whole pending batch before any collection reset. Every
+		// log must own its artifact even if another log drains the shared source.
+		batch := e.pending[:1]
+		if e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(batch[0].install) {
+			batch = e.pending
+		}
+		e.pending = e.pending[len(batch):]
+		e.current = &batch[0]
+		e.mu.Unlock()
+		for i := range batch {
+			if batch[i].snapshotPath == "" && e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(batch[i].install) {
+				if err := e.prepareSnapshot(ctx, &batch[i]); err != nil {
+					e.cfg.Logger.Warn("preparing batch snapshot", "file", batch[i].path, "err", err)
+				}
+			}
+		}
+		e.drainCollections(batch)
+		e.mu.Lock()
+		e.pending = append(batch[1:], e.pending...)
+		j := batch[0]
 		e.current = &j
 		e.mu.Unlock()
 
@@ -753,6 +778,7 @@ func (e *Engine) worker(ctx context.Context) {
 		e.current = nil
 		if rejected {
 			e.blocked = append(e.blocked, j)
+			e.blocked = append(e.blocked, e.pending...)
 			e.pending = nil
 		}
 		e.mu.Unlock()
@@ -769,6 +795,9 @@ func (e *Engine) worker(ctx context.Context) {
 }
 
 func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
+	if j.size <= 0 {
+		return errors.New("no non-empty combat log to archive")
+	}
 	st := e.cfg.Store.Get()
 	sourceKey := ""
 	if e.cfg.AppendGroupKey != nil {
@@ -811,13 +840,25 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 		storagePath = filepath.Join(dir, filepath.Base(sidecarSource))
 		group.Files = append(group.Files, storagePath)
 	}
-	if err := e.cfg.Store.Update(func(s *store.State) {
-		if s.ArchiveGroups == nil {
-			s.ArchiveGroups = map[string]store.ArchiveGroup{}
+	scoutingPath := ""
+	if e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(j.install) {
+		var warnings []foreverscouting.Warning
+		var scoutingErr error
+		artifactDir := filepath.Join(dir, uuid.NewString())
+		scoutingErr = os.MkdirAll(artifactDir, 0o700)
+		if scoutingErr == nil {
+			scoutingPath, warnings, scoutingErr = foreverscouting.Write(j.install.Dir, filepath.Join(artifactDir, foreverscouting.Filename))
 		}
-		s.ArchiveGroups[group.ID] = group
-	}); err != nil {
-		return fmt.Errorf("persist archive group: %w", err)
+		for _, warning := range warnings {
+			e.cfg.Logger.Warn("skipping optional Forever collections source", "file", warning.Path, "err", warning.Err)
+		}
+		if scoutingErr != nil {
+			e.cfg.Logger.Warn("creating optional Forever collections artifact", "err", scoutingErr)
+			scoutingPath = ""
+		}
+		if scoutingPath != "" {
+			group.Files = append(group.Files, scoutingPath)
+		}
 	}
 
 	// The process may restart after the finalization poll but before the worker
@@ -832,6 +873,24 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 	if err := copySnapshot(j.path, combatPath, j.size); err != nil {
 		return fmt.Errorf("copy combat log snapshot: %w", err)
 	}
+	if err := syncArchiveDir(dir); err != nil {
+		return err
+	}
+	if err := syncArchiveDir(filepath.Dir(dir)); err != nil {
+		return err
+	}
+	if e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(j.install) {
+		group.Snapshot = &store.ArchiveSnapshot{CombatPath: combatPath, StoragePath: storagePath, CollectionsPath: scoutingPath}
+	}
+	if err := e.cfg.Store.Update(func(s *store.State) {
+		if s.ArchiveGroups == nil {
+			s.ArchiveGroups = map[string]store.ArchiveGroup{}
+		}
+		s.ArchiveGroups[group.ID] = group
+	}); err != nil {
+		return fmt.Errorf("persist archive group: %w", err)
+	}
+
 	if !running {
 		info, err := os.Stat(j.path)
 		if err != nil {
@@ -855,8 +914,10 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 			storagePath = ""
 		}
 	}
+	j.collectionsReady = true
 	j.snapshotPath = combatPath
 	j.storagePath = storagePath
+	j.scoutingPath = scoutingPath
 	j.groupID = group.ID
 	if appendExisting {
 		j.appendLogID = group.LogID
@@ -864,6 +925,101 @@ func (e *Engine) prepareSnapshot(ctx context.Context, j *job) error {
 		j.sequence = group.ChunkSequence
 	}
 	return nil
+}
+
+// drainCollections serially archives the current shared collections for every
+// newly prepared log before resetting sources. Restored/retry artifacts stay immutable.
+func (e *Engine) drainCollections(batch []job) {
+	byInstall := map[string][]int{}
+	failed := map[string]bool{}
+	for i := range batch {
+		j := &batch[i]
+		if j.snapshotPath == "" {
+			failed[j.install.Dir] = true
+		}
+		if j.collectionsReady && e.cfg.CaptureForeverScouting != nil && e.cfg.CaptureForeverScouting(j.install) {
+			byInstall[j.install.Dir] = append(byInstall[j.install.Dir], i)
+		}
+	}
+	for root, indices := range byInstall {
+		// RPC jobs enter with a pre-existing managed log rather than going
+		// through copySnapshot. Flush that log before clearing addon storage.
+		for _, i := range indices {
+			f, err := os.OpenFile(batch[i].snapshotPath, os.O_RDWR, 0)
+			if err == nil {
+				err = f.Sync()
+				_ = f.Close()
+			}
+			if err == nil {
+				err = syncArchiveDir(filepath.Dir(batch[i].snapshotPath))
+			}
+			if err != nil {
+				failed[root] = true
+				e.cfg.Logger.Warn("syncing collections combat archive", "err", err)
+			}
+		}
+		if err := syncArchiveDir(filepath.Join(root, "ChronicleSidekick")); err != nil {
+			failed[root] = true
+		}
+		if err := syncArchiveDir(root); err != nil {
+			failed[root] = true
+		}
+		if failed[root] {
+			continue
+		}
+		warnings, err := foreverscouting.Drain(root, func(envelope foreverscouting.Envelope) error {
+			paths := map[int]string{}
+			for _, i := range indices {
+				dir := filepath.Join(root, "ChronicleSidekick", batch[i].groupID, uuid.NewString())
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					return err
+				}
+				path, _, err := foreverscouting.WriteEnvelope(envelope, filepath.Join(dir, foreverscouting.Filename), nil)
+				if err != nil {
+					return err
+				}
+				if err := syncArchiveDir(filepath.Dir(dir)); err != nil {
+					return err
+				}
+				paths[i] = path
+			}
+			if err := e.cfg.Store.Update(func(s *store.State) {
+				for i, path := range paths {
+					group := s.ArchiveGroups[batch[i].groupID]
+					group.Files = append(group.Files, path)
+					group.Snapshot = &store.ArchiveSnapshot{CombatPath: batch[i].snapshotPath, StoragePath: batch[i].storagePath, CollectionsPath: path}
+					s.ArchiveGroups[group.ID] = group
+				}
+			}); err != nil {
+				return err
+			}
+			for i, path := range paths {
+				batch[i].scoutingPath = path
+			}
+			return nil
+		})
+		for _, warning := range warnings {
+			e.cfg.Logger.Warn("skipping optional Forever collections", "file", warning.Path, "err", warning.Err)
+		}
+		if err != nil {
+			e.cfg.Logger.Warn("resetting archived Forever collections", "err", err)
+		}
+		for _, i := range indices {
+			batch[i].collectionsReady = false
+		}
+	}
+}
+
+func syncArchiveDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 func selectAppendGroup(groups map[string]store.ArchiveGroup, installDir, sourceKey string, startedAt time.Time) (store.ArchiveGroup, bool) {
@@ -918,6 +1074,9 @@ func copySnapshot(from, to string, size int64) error {
 	if written != size {
 		return fmt.Errorf("copied %d of %d bytes", written, size)
 	}
+	if err := dst.Sync(); err != nil {
+		return err
+	}
 	if err := dst.Close(); err != nil {
 		return err
 	}
@@ -971,6 +1130,9 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 			e.fail(j, err)
 			return false, j
 		}
+		single := []job{j}
+		e.drainCollections(single)
+		j = single[0]
 	}
 	log = e.cfg.Logger.With("file", j.snapshotPath, "size", j.size, "archive_group", j.groupID)
 
@@ -980,7 +1142,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 		log.Debug("could not identify log", "err", err)
 	}
 	ledgerID := sourceLedgerID(j.baseURL, src)
-	if src != "" && e.alreadyUploaded(ctx, log, j, src, ledgerID) {
+	if j.scoutingPath == "" && src != "" && e.alreadyUploaded(ctx, log, j, src, ledgerID) {
 		return false, j
 	}
 	delay := e.cfg.RetryBase
@@ -1005,7 +1167,7 @@ func (e *Engine) uploadOne(ctx context.Context, j job) (rejected bool, prepared 
 
 		res, err := e.cfg.Upload(ctx, token, UploadRequest{
 			BaseURL: j.baseURL, Path: j.snapshotPath, SourceID: src, Size: j.size, Fast: fast,
-			SidekickStoragePath: j.storagePath, AppendLogID: j.appendLogID,
+			SidekickStoragePath: j.storagePath, ForeverScoutingPath: j.scoutingPath, AppendLogID: j.appendLogID,
 			UploadID: j.uploadID, ChunkSequence: j.sequence,
 		})
 		var serverErr *upload.Error

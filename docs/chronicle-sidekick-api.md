@@ -173,8 +173,33 @@ For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
 (typically under `_forever_`), routes uploads to
 `https://forever.chronicleclassic.com`, and selects `v22-cleu`. This takes
 precedence over shared `.build.info` metadata for other installed clients.
-It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit without
-requiring a companion addon or Sidekick storage artifact.
+It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. Sidekick
+selects the newest regular, non-symlink `ChronicleCompanionForever.lua` across
+accounts by effective freshness: a valid
+`ChronicleCompanionForeverDB.collections.last_updated` is a finite,
+non-negative integer Lua number interpreted as a Unix instant in seconds;
+missing or invalid markers fall back to the filesystem modification instant,
+including subsecond precision. Every regular candidate is parsed for the marker.
+Equal effective instants use actual modification time (newest first), then
+account/source path in ascending bytewise order. Malformed files use modification
+time and warn if selected. The wall-clock marker from [addon commit
+1908c7d](https://github.com/Emyrk/ChronicleCompanionForever/commit/1908c7d9f8360ab31f71ab3c9a903d25bf884844)
+is updated on collection mutations, including initialization, not settings changes
+or no-ops. It is not a monotonic sequence number or acknowledgement. When that
+file has non-empty, valid `ChronicleCompanionForeverDB.collections`
+data, Sidekick also sends the distinct `forever_events` multipart JSON artifact defined in
+[`sidekick-events-artifact-v1.md`](sidekick-events-artifact-v1.md). Forever
+does not use the Wrath `sidekick_storage` field. Missing, empty, or invalid
+collections in the newest file omit the artifact without falling back to older
+accounts. This policy includes manual uploads and addon RPC archives. Once the log, complete `collections_lua` artifact, and
+exact pending association are durably retained, Sidekick resets only the
+selected account's `collections` value to `{}`, even while WoW is running. Other
+accounts and unrelated settings remain unchanged. Changed sources are recaptured
+from that same selected account before reset, without reselecting by freshness.
+The full collections table, including the marker, is retained unchanged and
+cleared as a whole. Reset safety compares full source bytes, never timestamps.
+Retries use immutable archives; combat-only deduplication never skips a collections artifact. See the
+artifact spec for failure handling and the live-writer race limitations.
 
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
 `Logs/WoWCombatLog*.txt` files and uploads with Chronicle parser format

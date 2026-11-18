@@ -300,6 +300,11 @@ func (e *Engine) queueAddonRequest(key string, request store.AddonRequest, insta
 		install: install, queuedAt: request.CreatedAt, groupID: request.ArchiveGroupID,
 		addonRequestID: key, sourceRemoved: true,
 	}
+	if group.Snapshot != nil {
+		j.scoutingPath = group.Snapshot.CollectionsPath
+	} else {
+		j.collectionsReady = true
+	}
 	e.mu.Lock()
 	e.pending = append(e.pending, j)
 	e.addonQueued[key] = true

@@ -142,6 +142,35 @@ func TestUpload(t *testing.T) {
 		require.Equal(t, "ChronicleDB = {append=true}", content)
 	})
 
+	t.Run("forever scouting", func(t *testing.T) {
+		t.Parallel()
+		scoutingPath := filepath.Join(t.TempDir(), "sidekick-events-v1.json")
+		const artifact = `{"schema_version":1,"kind":"sidekick-events","sources":[]}`
+		require.NoError(t, os.WriteFile(scoutingPath, []byte(artifact), 0o600))
+		var content, filename, contentType string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseMultipartForm(1<<20))
+			f, h, err := r.FormFile("forever_events")
+			require.NoError(t, err)
+			b, err := io.ReadAll(f)
+			require.NoError(t, err)
+			content = string(b)
+			filename = h.Filename
+			contentType = h.Header.Get("Content-Type")
+			_, _, err = r.FormFile("sidekick_storage")
+			require.ErrorIs(t, err, http.ErrMissingFile)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"log_id":"abc"}`))
+		}))
+		t.Cleanup(srv.Close)
+		c := &upload.Client{BaseURL: srv.URL, Token: "tok", ForeverScoutingPath: scoutingPath}
+		_, err := c.Upload(context.Background(), path, "", size)
+		require.NoError(t, err)
+		require.Equal(t, artifact, content)
+		require.Equal(t, "sidekick-events-v1.json", filename)
+		require.Equal(t, "application/json", contentType)
+	})
+
 	t.Run("tenant defaults need no parse query", func(t *testing.T) {
 		t.Parallel()
 		c, req, _ := respond(201, `{"log_id":"abc"}`)

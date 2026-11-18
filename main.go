@@ -172,6 +172,7 @@ func run() error {
 		Installs:               a.installs,
 		AutoUpload:             a.autoUploadTrigger,
 		CaptureSidekickStorage: a.captureSidekickStorage,
+		CaptureForeverScouting: a.captureForeverScouting,
 		AppendGroupKey:         a.appendGroupKey,
 		CompanionRPC:           a.companionRPCEnabled,
 		Token:                  a.cachedToken,
@@ -185,9 +186,13 @@ func run() error {
 			if !format.IncludesSidekickStorage() {
 				storagePath = ""
 			}
+			foreverScoutingPath := req.ForeverScoutingPath
+			if format != logformat.LogFormatV22Cleu {
+				foreverScoutingPath = ""
+			}
 			c := upload.Client{
 				BaseURL: req.BaseURL, Token: token, Format: string(format), Fast: req.Fast,
-				SidekickStoragePath: storagePath, AppendLogID: req.AppendLogID,
+				SidekickStoragePath: storagePath, ForeverScoutingPath: foreverScoutingPath, AppendLogID: req.AppendLogID,
 				UploadID: req.UploadID, ChunkSequence: req.ChunkSequence,
 			}
 			return c.Upload(ctx, req.Path, req.SourceID, req.Size)
@@ -316,6 +321,10 @@ func (a *app) autoUploadTrigger(install wowdir.Install) watch.Trigger {
 
 func (a *app) captureSidekickStorage(install wowdir.Install) bool {
 	return logFormatForInstall(install, a.store.Get().WoWLogFormats).IncludesSidekickStorage()
+}
+
+func (a *app) captureForeverScouting(install wowdir.Install) bool {
+	return logFormatForInstall(install, a.store.Get().WoWLogFormats) == logformat.LogFormatV22Cleu
 }
 
 func (a *app) appendGroupKey(install wowdir.Install, path string) string {
