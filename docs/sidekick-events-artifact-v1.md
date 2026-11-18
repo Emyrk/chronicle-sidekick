@@ -41,11 +41,27 @@ The file must contain exactly one assignment to the global
 `ChronicleCompanionForeverDB`. Sidekick ignores missing files. It rejects
 symlinks and non-regular source files. The `account` value is the account
 directory basename. Sidekick does not combine or deduplicate player GUID maps
-across accounts. Before reading or interpreting collections, Sidekick selects only
-the regular, non-symlink source with the newest filesystem modification time.
-Equal times are resolved by account, then source path, in ascending bytewise
-string order. If the selected file has missing, empty, or invalid collections,
-Sidekick omits the artifact without falling back to an older account.
+across accounts. Sidekick reads and validates every regular, non-symlink candidate
+and selects the one with the newest effective freshness. Effective freshness is
+`ChronicleCompanionForeverDB.collections.last_updated` when it is a finite,
+non-negative integer Lua number, interpreted as a Unix instant in seconds;
+otherwise it is that file's filesystem modification instant (including subsecond
+precision). Numeric strings, negative values, fractional values, and other types
+are not valid markers. Equal effective instants are resolved by actual file
+modification time (newest first), then account and source path in ascending
+bytewise string order. A malformed candidate has no usable marker and uses its
+file modification time. If selected, it produces a warning and no artifact. If
+the selected file has missing, empty, or invalid collections, Sidekick omits the
+artifact without falling back to an older account.
+
+The marker was added in [addon commit
+1908c7d](https://github.com/Emyrk/ChronicleCompanionForever/commit/1908c7d9f8360ab31f71ab3c9a903d25bf884844).
+It is a wall-clock timestamp updated on collection mutations, including
+initialization, not on settings changes or no-ops. It is not a sequence number
+and is not guaranteed to increase monotonically. It is used only for account
+selection, never as acknowledgement, snapshot identity, or reset authorization.
+The complete collections table, including this marker and unknown fields, is
+captured unchanged and cleared as a whole. A marker-only table is non-empty.
 
 Sidekick validates the complete file as restricted, data-only Lua. It accepts
 nested tables, implicit numeric entries, bracketed quoted or numeric keys,
@@ -124,7 +140,7 @@ not guarantee atomic rename on non-Unix platforms. Sidekick checks the full sour
 source is re-read, captured into another durable artifact, and retried, preserving
 the latest settings. Up to eight passes bound a continuously changing writer;
 failure leaves the latest unreset source in place and logs a warning. Recapture
-is pinned to the initially selected account for that drain, even if modification
+is pinned to the initially selected account for that drain, even if freshness markers or modification
 times change; it never moves on to an older account.
 Missing/empty logs, malformed sources, copy failures, artifact-write failures, and
 state-persistence failures never authorize a reset.

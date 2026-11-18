@@ -20,7 +20,7 @@ func cleanupSource(t *testing.T, body string) (string, string) {
 
 func TestDrainPreservesOutsideCollectionsAndUnknownFields(t *testing.T) {
 	t.Parallel()
-	const table = `{scouting={a=1}, battleground={future={unknown="keep"}}, [77]=false}`
+	const table = `{last_updated=1700000000,scouting={a=1}, battleground={future={unknown="keep"}}, [77]=false}`
 	const prefix = "-- header\nChronicleCompanionForeverDB = { settings = {sidekick_enabled=true}, collections = "
 	const suffix = ", mystery = {future=42} } -- footer\n"
 	root, path := cleanupSource(t, prefix+table+suffix)
@@ -49,15 +49,15 @@ func TestDrainPreservesOutsideCollectionsAndUnknownFields(t *testing.T) {
 
 func TestDrainRecapturesChangedSnapshotAndLatestSettings(t *testing.T) {
 	t.Parallel()
-	root, path := cleanupSource(t, `ChronicleCompanionForeverDB={collections={old=1},setting="old"}`)
+	root, path := cleanupSource(t, `ChronicleCompanionForeverDB={collections={last_updated=1700000000,old=1},setting="old"}`)
 	calls := 0
 	_, err := Drain(root, func(envelope Envelope) error {
 		calls++
 		if calls == 1 {
-			require.Equal(t, `{old=1}`, envelope.Sources[0].CollectionsLua)
-			return os.WriteFile(path, []byte(`ChronicleCompanionForeverDB={collections={new={unknown=true}},setting="latest"}`), 0600)
+			require.Equal(t, `{last_updated=1700000000,old=1}`, envelope.Sources[0].CollectionsLua)
+			return os.WriteFile(path, []byte(`ChronicleCompanionForeverDB={collections={last_updated=1700000000,new={unknown=true}},setting="latest"}`), 0600)
 		}
-		require.Equal(t, `{new={unknown=true}}`, envelope.Sources[0].CollectionsLua)
+		require.Equal(t, `{last_updated=1700000000,new={unknown=true}}`, envelope.Sources[0].CollectionsLua)
 		return nil
 	})
 	require.NoError(t, err)

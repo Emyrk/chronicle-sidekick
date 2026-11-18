@@ -5,6 +5,8 @@ package foreverscouting
 import (
 	"bytes"
 	"fmt"
+	"math"
+	"math/big"
 	"unicode/utf8"
 )
 
@@ -26,6 +28,7 @@ type value struct {
 	start, end  int
 	fields      int
 	collections *value
+	lastUpdated *value
 }
 
 type parser struct {
@@ -48,49 +51,65 @@ type Span struct{ Start, End int }
 
 // Locate validates the entire source and returns surgical replacement offsets.
 func Locate(src []byte) (span Span, present bool, err error) {
+	span, present, _, err = locate(src)
+	return
+}
+
+// locate also reads the optional freshness marker without interpreting collections.
+func locate(src []byte) (span Span, present bool, updated *big.Rat, err error) {
 	if !utf8.Valid(src) {
-		return Span{}, false, fmt.Errorf("restricted Lua is not valid UTF-8")
+		return Span{}, false, nil, fmt.Errorf("restricted Lua is not valid UTF-8")
 	}
 	p := parser{src: src}
 	if err := p.skip(); err != nil {
-		return Span{}, false, err
+		return Span{}, false, nil, err
 	}
 	name, ok := p.identifier()
 	if !ok || name != globalName {
-		return Span{}, false, p.errorf("expected assignment to %s", globalName)
+		return Span{}, false, nil, p.errorf("expected assignment to %s", globalName)
 	}
 	if err := p.skip(); err != nil {
-		return Span{}, false, err
+		return Span{}, false, nil, err
 	}
 	if !p.take('=') {
-		return Span{}, false, p.errorf("expected '='")
+		return Span{}, false, nil, p.errorf("expected '='")
 	}
-	root, err := p.parseValue(true)
+	root, err := p.parseValue(0)
 	if err != nil {
-		return Span{}, false, err
+		return Span{}, false, nil, err
 	}
 	if root.kind != kindTable {
-		return Span{}, false, p.errorf("%s must be a table", globalName)
+		return Span{}, false, nil, p.errorf("%s must be a table", globalName)
 	}
 	if err := p.skip(); err != nil {
-		return Span{}, false, err
+		return Span{}, false, nil, err
 	}
 	if p.pos != len(p.src) {
-		return Span{}, false, p.errorf("unexpected expression or second statement")
+		return Span{}, false, nil, p.errorf("unexpected expression or second statement")
 	}
 	if root.collections == nil || root.collections.kind == kindNil || root.collections.kind == kindFalse {
-		return Span{}, false, nil
+		return Span{}, false, nil, nil
 	}
 	if root.collections.kind != kindTable {
-		return Span{}, false, p.errorf("collections must be a table, nil, or false")
+		return Span{}, false, nil, p.errorf("collections must be a table, nil, or false")
 	}
 	if root.collections.fields == 0 {
-		return Span{}, false, nil
+		return Span{}, false, nil, nil
 	}
-	return Span{root.collections.start, root.collections.end}, true, nil
+	if marker := root.collections.lastUpdated; marker != nil && marker.kind == kindNumber {
+		number, ok := new(big.Rat).SetString(string(src[marker.start:marker.end]))
+		if ok && number.Sign() >= 0 && number.IsInt() {
+			floating, _ := number.Float64()
+			if !math.IsInf(floating, 0) {
+				updated = number
+			}
+		}
+	}
+	return Span{root.collections.start, root.collections.end}, true, updated, nil
 }
 
-func (p *parser) parseValue(root bool) (value, error) {
+// context is 0 for the DB root, 1 for its collections, and -1 elsewhere.
+func (p *parser) parseValue(context int) (value, error) {
 	if err := p.skip(); err != nil {
 		return value{}, err
 	}
@@ -100,7 +119,7 @@ func (p *parser) parseValue(root bool) (value, error) {
 	}
 	switch p.src[p.pos] {
 	case '{':
-		return p.parseTable(root)
+		return p.parseTable(context)
 	case '\'', '"':
 		_, end, err := p.quotedString()
 		return value{kind: kindString, start: start, end: end}, err
@@ -127,7 +146,7 @@ func (p *parser) parseValue(root bool) (value, error) {
 	}
 }
 
-func (p *parser) parseTable(root bool) (value, error) {
+func (p *parser) parseTable(context int) (value, error) {
 	out := value{kind: kindTable, start: p.pos}
 	p.pos++
 	if err := p.skip(); err != nil {
@@ -183,17 +202,25 @@ func (p *parser) parseTable(root bool) (value, error) {
 				p.pos = saved
 			}
 		}
-		entry, err := p.parseValue(false)
+		childContext := -1
+		if context == 0 && keyed && key == "collections" {
+			childContext = 1
+		}
+		entry, err := p.parseValue(childContext)
 		if err != nil {
 			return value{}, err
 		}
 		out.fields++
-		if root && keyed && key == "collections" {
+		if context == 0 && keyed && key == "collections" {
 			if out.collections != nil {
 				return value{}, p.errorf("duplicate collections field")
 			}
 			copy := entry
 			out.collections = &copy
+		}
+		if context == 1 && keyed && key == "last_updated" {
+			copy := entry
+			out.lastUpdated = &copy
 		}
 		if err := p.skip(); err != nil {
 			return value{}, err

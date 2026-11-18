@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,8 +40,9 @@ type Warning struct {
 func (w Warning) Error() string { return fmt.Sprintf("%s: %v", w.Path, w.Err) }
 
 // Build captures only the newest regular, non-symlink Forever SavedVariables
-// source by modification time, breaking ties by account/source ascending. Selection
-// precedes parsing: empty or invalid collections never fall back to older accounts.
+// source by collections.last_updated (or file mtime when unavailable). Ties use
+// file mtime, then account/source ascending. Empty or invalid collections never
+// fall back to older accounts.
 func Build(root string) (Envelope, []Warning, error) {
 	return build(root, "")
 }
@@ -58,7 +60,10 @@ func build(root, selectedPath string) (Envelope, []Warning, error) {
 	}
 	var warnings []Warning
 	var selected Source
-	var newest time.Time
+	var newest *big.Rat
+	var newestMtime time.Time
+	var selectedErr error
+	var selectedPresent bool
 	for _, entry := range entries {
 		account := entry.Name()
 		accountDir := filepath.Join(accountRoot, account)
@@ -101,29 +106,50 @@ func build(root, selectedPath string) (Envelope, []Warning, error) {
 			continue
 		}
 		source := filepath.ToSlash(filepath.Join("WTF", "Account", account, "SavedVariables", "ChronicleCompanionForever.lua"))
-		if selected.path == "" || info.ModTime().After(newest) ||
-			(info.ModTime().Equal(newest) && (account < selected.Account || (account == selected.Account && source < selected.Source))) {
-			selected = Source{Account: account, Source: source, path: path}
-			newest = info.ModTime()
+		body, readErr := os.ReadFile(path)
+		var span Span
+		var present bool
+		var updated *big.Rat
+		if readErr == nil {
+			span, present, updated, readErr = locate(body)
+		}
+		freshness := updated
+		if freshness == nil {
+			freshness = unixInstant(info.ModTime())
+		}
+		comparison := 1
+		if newest != nil {
+			comparison = freshness.Cmp(newest)
+		}
+		if selected.path == "" || comparison > 0 || (comparison == 0 &&
+			(info.ModTime().After(newestMtime) || (info.ModTime().Equal(newestMtime) &&
+				(account < selected.Account || (account == selected.Account && source < selected.Source))))) {
+			selected = Source{Account: account, Source: source, path: path, body: body, span: span}
+			newest, newestMtime = freshness, info.ModTime()
+			selectedErr, selectedPresent = readErr, present
 		}
 	}
+
 	if selected.path == "" {
 		return envelope, warnings, nil
 	}
-	body, err := os.ReadFile(selected.path)
-	if err != nil {
-		return envelope, append(warnings, Warning{selected.path, err}), nil
+	if selectedErr != nil {
+		return envelope, append(warnings, Warning{selected.path, selectedErr}), nil
 	}
-	span, present, err := Locate(body)
-	if err != nil {
-		return envelope, append(warnings, Warning{selected.path, err}), nil
-	}
-	if present {
-		selected.CollectionsLua = string(body[span.Start:span.End])
-		selected.body, selected.span = body, span
+	if selectedPresent {
+		selected.CollectionsLua = string(selected.body[selected.span.Start:selected.span.End])
 		envelope.Sources = append(envelope.Sources, selected)
 	}
+
 	return envelope, warnings, nil
+}
+
+// unixInstant preserves subsecond mtime precision when comparing it to a marker
+// expressed in whole Unix seconds, without float rounding or int64 nanosecond overflow.
+func unixInstant(stamp time.Time) *big.Rat {
+	seconds := new(big.Rat).SetInt64(stamp.Unix())
+	fraction := new(big.Rat).SetFrac64(int64(stamp.Nanosecond()), 1_000_000_000)
+	return seconds.Add(seconds, fraction)
 }
 
 // Write builds and durably writes an artifact. It returns an empty path when

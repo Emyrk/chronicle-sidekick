@@ -25,7 +25,7 @@ func setAccountTime(t *testing.T, path string, stamp time.Time) {
 	require.NoError(t, os.Chtimes(path, stamp, stamp))
 }
 
-func TestBuildSelectsNewestAccountBeforeParsing(t *testing.T) {
+func TestBuildSelectsNewestAccountWithoutFallback(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, account, body     string
@@ -48,7 +48,7 @@ func TestBuildSelectsNewestAccountBeforeParsing(t *testing.T) {
 			if tc.account == other {
 				other = "Zulu"
 			}
-			old := writeAccount(t, root, other, `ChronicleCompanionForeverDB = { collections = { older = true } }`)
+			old := writeAccount(t, root, other, `ChronicleCompanionForeverDB = { collections = { last_updated = 1700000000, older = true } }`)
 			body := `ChronicleCompanionForeverDB = { settings = true }`
 			if tc.body != "" {
 				body = `ChronicleCompanionForeverDB = { collections = ` + tc.body + ` }`
@@ -138,9 +138,9 @@ func TestDrainOnlyResetsSelectedAccountAndPinsRecapture(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			const olderBody = `ChronicleCompanionForeverDB={collections={older=1},setting="untouched"}`
+			const olderBody = `ChronicleCompanionForeverDB={collections={last_updated=1700000000,older=1},setting="untouched"}`
 			older := writeAccount(t, root, "Alpha", olderBody)
-			selected := writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB={collections={newer=1},setting="original"}`)
+			selected := writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB={collections={last_updated=1700003600,newer=1},setting="original"}`)
 			stamp := time.Unix(1700000000, 0)
 			setAccountTime(t, older, stamp)
 			setAccountTime(t, selected, stamp.Add(time.Hour))
@@ -150,13 +150,13 @@ func TestDrainOnlyResetsSelectedAccountAndPinsRecapture(t *testing.T) {
 				require.Len(t, envelope.Sources, 1)
 				require.Equal(t, "Zulu", envelope.Sources[0].Account)
 				if calls == 1 {
-					require.Equal(t, `{newer=1}`, envelope.Sources[0].CollectionsLua)
+					require.Equal(t, `{last_updated=1700003600,newer=1}`, envelope.Sources[0].CollectionsLua)
 					if recapture {
-						require.NoError(t, os.WriteFile(selected, []byte(`ChronicleCompanionForeverDB={collections={changed={unknown=true}},setting="latest"}`), 0600))
+						require.NoError(t, os.WriteFile(selected, []byte(`ChronicleCompanionForeverDB={collections={last_updated=1,changed={unknown=true}},setting="latest"}`), 0600))
 						setAccountTime(t, selected, stamp.Add(-time.Hour))
 					}
 				} else {
-					require.Equal(t, `{changed={unknown=true}}`, envelope.Sources[0].CollectionsLua)
+					require.Equal(t, `{last_updated=1,changed={unknown=true}}`, envelope.Sources[0].CollectionsLua)
 				}
 				return nil
 			})
@@ -176,6 +176,62 @@ func TestDrainOnlyResetsSelectedAccountAndPinsRecapture(t *testing.T) {
 			info, err := os.Stat(older)
 			require.NoError(t, err)
 			require.True(t, info.ModTime().Equal(stamp))
+		})
+	}
+}
+
+func TestBuildCollectionsFreshness(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, alpha, zulu   string
+		alphaTime, zuluTime time.Time
+		want                string
+	}{
+		{"marker beats newer file", "last_updated=1700000200", "last_updated=1700000100", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Alpha"},
+		{"mixed marker and fallback", "last_updated=1700000200", "", time.Unix(1700000000, 0), time.Unix(1700000100, 0), "Alpha"},
+		{"fallback beats marker", "last_updated=1700000200", "", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Zulu"},
+		{"equal marker uses mtime", "last_updated=1700000200", "last_updated=1700000200", time.Unix(1700000000, 0), time.Unix(1700000100, 0), "Zulu"},
+		{"equal marker and mtime uses account", "last_updated=1700000200", "last_updated=1700000200", time.Unix(1700000000, 0), time.Unix(1700000000, 0), "Alpha"},
+		{"fallback preserves subsecond", "last_updated=1700000200", "", time.Unix(1700000300, 0), time.Unix(1700000200, 500000000), "Zulu"},
+		{"zero is valid", "last_updated=0", "last_updated=1", time.Unix(1700000000, 0), time.Unix(1, 0), "Zulu"},
+		{"nested marker ignored", "future={last_updated=1700000400}", "last_updated=1700000200", time.Unix(1700000000, 0), time.Unix(1700000100, 0), "Zulu"},
+		{"hex marker", "last_updated=0x6553f1c8", "last_updated=1700000100", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Alpha"},
+		{"bracketed marker", `["last_updated"]=1700000200`, "last_updated=1700000100", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Alpha"},
+		{"integral decimal", "last_updated=1700000200.0", "last_updated=1700000100", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Alpha"},
+		{"integral exponent", "last_updated=1.7000002e9", "last_updated=1700000100", time.Unix(1700000000, 0), time.Unix(1700000300, 0), "Alpha"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			alpha := writeAccount(t, root, "Alpha", `ChronicleCompanionForeverDB={collections={payload=true,`+tc.alpha+`}}`)
+			zulu := writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB={collections={payload=true,`+tc.zulu+`}}`)
+			setAccountTime(t, alpha, tc.alphaTime)
+			setAccountTime(t, zulu, tc.zuluTime)
+			envelope, warnings, err := foreverscouting.Build(root)
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			require.Len(t, envelope.Sources, 1)
+			require.Equal(t, tc.want, envelope.Sources[0].Account)
+		})
+	}
+}
+
+func TestBuildInvalidMarkersFallBackToMtime(t *testing.T) {
+	t.Parallel()
+	for _, marker := range []string{`-1`, `1700000200.5`, `"1700000200"`, `false`, `true`, `nil`, `{}`, `1e999`, `-1e999`, `0.00000000000000000001`} {
+		t.Run(marker, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			alpha := writeAccount(t, root, "Alpha", `ChronicleCompanionForeverDB={collections={last_updated=`+marker+`,payload=true}}`)
+			zulu := writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB={collections={last_updated=1700000100,payload=true}}`)
+			setAccountTime(t, alpha, time.Unix(1700000200, 0))
+			setAccountTime(t, zulu, time.Unix(1700000300, 0))
+			envelope, warnings, err := foreverscouting.Build(root)
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			require.Len(t, envelope.Sources, 1)
+			require.Equal(t, "Alpha", envelope.Sources[0].Account)
+			require.Contains(t, envelope.Sources[0].CollectionsLua, "last_updated="+marker)
 		})
 	}
 }
