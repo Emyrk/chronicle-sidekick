@@ -1,9 +1,11 @@
 package foreverscouting
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -83,4 +85,36 @@ func TestNoScoutingFallback(t *testing.T) {
 	_, present, err := Extract([]byte(`ChronicleCompanionForeverDB={scouting={legacy=1}}`))
 	require.NoError(t, err)
 	require.False(t, present)
+}
+
+// TestDrainLiveSavedVariables covers a real Forever account file, including
+// bracketed keys, implicit arrays, unknown guilds, and the freshness marker.
+func TestDrainLiveSavedVariables(t *testing.T) {
+	t.Parallel()
+	original, err := os.ReadFile("testdata/forever-live.lua")
+	require.NoError(t, err)
+	span, present, err := Locate(original)
+	require.NoError(t, err)
+	require.True(t, present)
+	wantCollections := string(original[span.Start:span.End])
+	require.Equal(t, 14, strings.Count(wantCollections, `["Player-`))
+	root, path := cleanupSource(t, string(original))
+	artifact := filepath.Join(t.TempDir(), Filename)
+	warnings, err := Drain(root, func(envelope Envelope) error {
+		require.Len(t, envelope.Sources, 1)
+		require.Equal(t, wantCollections, envelope.Sources[0].CollectionsLua)
+		_, _, err := WriteEnvelope(envelope, artifact, nil)
+		return err
+	})
+	require.NoError(t, err)
+	require.Empty(t, warnings)
+	body, err := os.ReadFile(artifact)
+	require.NoError(t, err)
+	var decoded Envelope
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	require.Len(t, decoded.Sources, 1)
+	require.Equal(t, wantCollections, decoded.Sources[0].CollectionsLua)
+	live, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(original[:span.Start])+"{}"+string(original[span.End:]), string(live))
 }

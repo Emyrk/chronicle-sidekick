@@ -653,6 +653,11 @@ func TestEngineCapturesAndClearsForeverCollectionsWhileRunning(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(empty), 0o755))
 	require.NoError(t, os.WriteFile(alpha, []byte(`ChronicleCompanionForeverDB = { collections = { ["Player-1"] = { delta = -2 } } }`), 0o600))
 	require.NoError(t, os.WriteFile(empty, []byte(`ChronicleCompanionForeverDB = { collections = {} }`), 0o600))
+	// Account selection must not depend on filesystem timestamp resolution.
+	older := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	require.NoError(t, os.Chtimes(empty, older, older))
+	require.NoError(t, os.Chtimes(alpha, newer, newer))
 
 	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
 
