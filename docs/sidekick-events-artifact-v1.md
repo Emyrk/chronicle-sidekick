@@ -92,8 +92,7 @@ unsupported and causes that source to be skipped with a warning.
 Every Forever upload path, including tray manual upload and addon RPC archives,
 captures available flushed SavedVariables collections. Missing accounts are
 ordinary absence. Invalid sources warn without blocking the combat log. There is
-no fallback to the old `DB.scouting` field. The addon PR diff previously showed
-that old field; this contract follows the explicit `DB.collections` requirement.
+no fallback to the old `DB.scouting` field.
 
 Sidekick prepares all currently pending logs before resetting shared sources.
 Each log owns an immutable artifact in a unique archive subdirectory. The state
