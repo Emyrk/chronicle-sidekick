@@ -150,7 +150,7 @@ func TestUpload(t *testing.T) {
 		var content, filename, contentType string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			require.NoError(t, r.ParseMultipartForm(1<<20))
-			f, h, err := r.FormFile("sidekick-events")
+			f, h, err := r.FormFile("forever_events")
 			require.NoError(t, err)
 			b, err := io.ReadAll(f)
 			require.NoError(t, err)

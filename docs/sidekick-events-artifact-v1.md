@@ -12,11 +12,14 @@ New collections inside that container do not require a new artifact kind.
 
 ## Multipart contract
 
-The upload request includes the following optional multipart part:
+The upload request includes the following optional multipart part, matching
+Chronicle PR [#2056](https://github.com/Emyrk/chronicle/pull/2056). Chronicle stores
+it as artifact kind `forever-events`; the JSON envelope kind remains
+`sidekick-events`.
 
 | Property | Value |
 | --- | --- |
-| Field name | `sidekick-events` |
+| Field name | `forever_events` |
 | Filename | `sidekick-events-v1.json` |
 | Content type | `application/json` |
 

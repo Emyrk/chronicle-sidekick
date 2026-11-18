@@ -500,7 +500,7 @@ func writeForm(mw *multipart.Writer, src io.Reader, size int64, name string, fas
 	}
 	if foreverScouting != nil {
 		h := textproto.MIMEHeader{}
-		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="sidekick-events"; filename="%s"`, foreverScoutingName))
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="forever_events"; filename="%s"`, foreverScoutingName))
 		h.Set("Content-Type", "application/json")
 		part, err := mw.CreatePart(h)
 		if err != nil {
