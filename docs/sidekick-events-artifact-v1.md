@@ -1,13 +1,13 @@
 # Sidekick events artifact, version 1
 
-Chronicle Sidekick may attach scouting data from ChronicleCompanionForever to a
+Chronicle Sidekick may attach collection data from ChronicleCompanionForever to a
 WoW Forever combat-log upload. This artifact is distinct from the Wrath
 `sidekick_storage` artifact.
 
 The generic `sidekick-events` artifact carries addon event collections. Version 1
-captures the complete Forever `scouting` table, including unknown future
-collections such as battleground events. The `scouting_lua` field names the
-addon storage container, not a restriction to player-level or guild events.
+captures the complete Forever `ChronicleCompanionForeverDB.collections` table, including unknown future
+collections such as battleground events. The `collections_lua` field is generic: it includes `scouting` and future
+siblings such as battleground collections without interpreting their subfields.
 New collections inside that container do not require a new artifact kind.
 
 ## Multipart contract
@@ -21,7 +21,7 @@ The upload request includes the following optional multipart part:
 | Content type | `application/json` |
 
 Sidekick sends the part on initial `upload-v2` requests and append requests when
-an immutable archive snapshot contains at least one non-empty scouting source.
+an immutable archive snapshot contains at least one non-empty collections source.
 If every account source is missing, empty, unsupported, or malformed, Sidekick
 omits the multipart part. A bad optional source does not block combat-log upload.
 
@@ -58,7 +58,7 @@ The version 1 envelope is:
     {
       "account": "ACCOUNT_DIR_NAME",
       "source": "WTF/Account/ACCOUNT_DIR_NAME/SavedVariables/ChronicleCompanionForever.lua",
-      "scouting_lua": "{ ... exact validated Lua table expression ... }"
+      "collections_lua": "{ ... exact validated Lua table expression ... }"
     }
   ]
 }
@@ -68,10 +68,10 @@ Fields have these meanings:
 
 - `schema_version` is the integer `1`.
 - `kind` is the exact string `sidekick-events`.
-- `sources` contains one entry for each account with non-empty scouting data.
+- `sources` contains one entry for each account with non-empty collections data.
 - `account` is the source account directory basename.
 - `source` is the slash-separated path relative to the Forever root.
-- `scouting_lua` is the exact byte sequence of the validated `scouting` table
+- `collections_lua` is the exact byte sequence of the validated `collections` table
   expression, from its opening `{` through its matching `}`. JSON escaping is
   transport encoding only. Decoding the JSON string recovers the original Lua
   expression bytes.
@@ -81,21 +81,57 @@ ordering. Each account remains a separate entry.
 
 ## Omission and non-empty rules
 
-A source is omitted when `scouting` is absent, `nil`, `false`, or an empty table
-`{}`. A scouting table is non-empty when it contains at least one explicit or
+A source is omitted when `collections` is absent, `nil`, `false`, or an empty table
+`{}`. A collections table is non-empty when it contains at least one explicit or
 implicit field. Field values such as `false`, `nil`, or the empty string still
-count as entries. A non-table scouting value other than `nil` or `false` is
+count as entries. A non-table collections value other than `nil` or `false` is
 unsupported and causes that source to be skipped with a warning.
 
-Sidekick creates `sidekick-events-v1.json` beside the immutable combat-log
-snapshot. It does not modify, clear, rename, or delete the live
-ChronicleCompanionForever SavedVariables source. Pending archive recovery uses
-the retained JSON artifact, so retries after a Sidekick restart attach the same
-snapshot.
+## Capture, cleanup, and retry lifecycle
+
+Every Forever upload path, including tray manual upload and addon RPC archives,
+captures available flushed SavedVariables collections. Missing accounts are
+ordinary absence. Invalid sources warn without blocking the combat log. There is
+no fallback to the old `DB.scouting` field. The addon PR diff previously showed
+that old field; this contract follows the explicit `DB.collections` requirement.
+
+Sidekick prepares all currently pending logs before resetting shared sources.
+Each log owns an immutable artifact in a unique archive subdirectory. The state
+file records the exact combat-log/artifact pair, so append groups cannot overwrite
+older retry artifacts or recover an artifact belonging to a different snapshot.
+Retries and restart recovery use the retained artifact, not live SavedVariables.
+Combat-only source-ID deduplication does not skip requests with a collections
+artifact; the multipart request must reach Chronicle.
+
+Before cleanup Sidekick re-reads and validates the latest complete source. It
+syncs the combat-log archive, writes and syncs a new immutable JSON artifact for
+every affected log, then persists their exact archive associations. Only after
+all those steps succeed does it replace the captured `collections` value with
+`{}`. Unrelated bytes, comments, settings (including `sidekick_enabled`), and
+unknown fields outside `collections` are preserved. Earlier artifacts remain
+retained in the same archive group.
+
+Cleanup uses a same-directory temporary file, file sync, and `os.Rename`
+replacement. Rename is atomic where the platform/filesystem supports it; Go does
+not guarantee atomic rename on non-Unix platforms. Sidekick checks the full source bytes again immediately before replacement. A changed
+source is re-read, captured into another durable artifact, and retried, preserving
+the latest settings. Up to eight passes bound a continuously changing writer;
+failure leaves the latest unreset source in place and logs a warning. Captures
+from accounts already reset in an earlier pass remain in the batch artifact.
+Missing/empty logs, malformed sources, copy failures, artifact-write failures, and
+state-persistence failures never authorize a reset.
+
+**Cleanup is unconditional with respect to game process state**, including manual
+uploads while WoW is running. This is the requested cleanup policy, not a claim
+that writing live SavedVariables is safe. The running game may restore its
+in-memory collections on its next flush. There is no cross-process lock or atomic
+coordination with WoW: an external write between the final byte comparison and
+rename can still race the replacement. Atomic replacement and byte comparisons
+provide best-effort protection only. The manual-upload UI is handled separately.
 
 ## Chronicle processing requirement
 
-Chronicle must treat `scouting_lua` as untrusted restricted Lua data. Chronicle
+Chronicle must treat `collections_lua` as untrusted restricted Lua data. Chronicle
 must parse it without executing Lua, loading it into a Lua runtime, evaluating
 expressions, or invoking metatables. Unknown fields and collections should be
 preserved or ignored according to Chronicle's parser version. They must not make

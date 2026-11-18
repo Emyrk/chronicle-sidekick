@@ -22,10 +22,10 @@ func writeAccount(t *testing.T, root, account, body string) string {
 func TestBuildKeepsAccountsSeparateSortedAndSkipsEmptyOrMalformed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB = { scouting = { ["Player-Z"] = { delta = -1 } } }`)
-	writeAccount(t, root, "Alpha", `ChronicleCompanionForeverDB = { ["scouting"] = { [1] = "first" } }`)
-	writeAccount(t, root, "Empty", `ChronicleCompanionForeverDB = { scouting = {} }`)
-	writeAccount(t, root, "Bad", `ChronicleCompanionForeverDB = { scouting = collectgarbage() }`)
+	writeAccount(t, root, "Zulu", `ChronicleCompanionForeverDB = { collections = { ["Player-Z"] = { delta = -1 } } }`)
+	writeAccount(t, root, "Alpha", `ChronicleCompanionForeverDB = { ["collections"] = { [1] = "first" } }`)
+	writeAccount(t, root, "Empty", `ChronicleCompanionForeverDB = { collections = {} }`)
+	writeAccount(t, root, "Bad", `ChronicleCompanionForeverDB = { collections = collectgarbage() }`)
 
 	envelope, warnings, err := foreverscouting.Build(root)
 	require.NoError(t, err)
@@ -34,13 +34,13 @@ func TestBuildKeepsAccountsSeparateSortedAndSkipsEmptyOrMalformed(t *testing.T) 
 	require.Equal(t, foreverscouting.Kind, envelope.Kind)
 	require.Equal(t, []string{"Alpha", "Zulu"}, []string{envelope.Sources[0].Account, envelope.Sources[1].Account})
 	require.Equal(t, "WTF/Account/Alpha/SavedVariables/ChronicleCompanionForever.lua", envelope.Sources[0].Source)
-	require.Contains(t, envelope.Sources[1].ScoutingLua, `"Player-Z"`)
+	require.Contains(t, envelope.Sources[1].CollectionsLua, `"Player-Z"`)
 }
 
 func TestBuildRejectsSymlinkSource(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target.lua")
-	require.NoError(t, os.WriteFile(target, []byte(`ChronicleCompanionForeverDB = { scouting = { 1 } }`), 0o600))
+	require.NoError(t, os.WriteFile(target, []byte(`ChronicleCompanionForeverDB = { collections = { 1 } }`), 0o600))
 	path := filepath.Join(root, "WTF", "Account", "Account", "SavedVariables", "ChronicleCompanionForever.lua")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	if err := os.Symlink(target, path); err != nil {
@@ -57,14 +57,14 @@ func TestWriteOmitsEmptyArtifactAndWritesVersionedJSON(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, foreverscouting.Filename)
-	writeAccount(t, root, "Empty", `ChronicleCompanionForeverDB = { scouting = false }`)
+	writeAccount(t, root, "Empty", `ChronicleCompanionForeverDB = { collections = false }`)
 	got, warnings, err := foreverscouting.Write(root, path)
 	require.NoError(t, err)
 	require.Empty(t, warnings)
 	require.Empty(t, got)
 	require.NoFileExists(t, path)
 
-	writeAccount(t, root, "Data", `ChronicleCompanionForeverDB = { scouting = { stamp = 1700000000 } }`)
+	writeAccount(t, root, "Data", `ChronicleCompanionForeverDB = { collections = { stamp = 1700000000 } }`)
 	got, warnings, err = foreverscouting.Write(root, path)
 	require.NoError(t, err)
 	require.Empty(t, warnings)

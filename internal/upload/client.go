@@ -149,7 +149,7 @@ type Client struct {
 	// SidekickStoragePath is an optional 3.3.5a sidecar artifact included with
 	// both initial and append requests.
 	SidekickStoragePath string
-	// ForeverScoutingPath is an optional versioned WoW Forever scouting artifact.
+	// ForeverScoutingPath is an optional versioned WoW Forever collections artifact.
 	ForeverScoutingPath string
 	// Token returns the current bearer token ("" when signed out).
 	Token string

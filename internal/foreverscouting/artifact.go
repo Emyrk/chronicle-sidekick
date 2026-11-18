@@ -1,6 +1,7 @@
 package foreverscouting
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +23,12 @@ type Envelope struct {
 }
 
 type Source struct {
-	Account     string `json:"account"`
-	Source      string `json:"source"`
-	ScoutingLua string `json:"scouting_lua"`
+	Account        string `json:"account"`
+	Source         string `json:"source"`
+	CollectionsLua string `json:"collections_lua"`
+	path           string
+	body           []byte
+	span           Span
 }
 
 type Warning struct {
@@ -90,7 +94,7 @@ func Build(root string) (Envelope, []Warning, error) {
 			warnings = append(warnings, Warning{path, err})
 			continue
 		}
-		scouting, present, err := Extract(body)
+		span, present, err := Locate(body)
 		if err != nil {
 			warnings = append(warnings, Warning{path, err})
 			continue
@@ -99,9 +103,10 @@ func Build(root string) (Envelope, []Warning, error) {
 			continue
 		}
 		envelope.Sources = append(envelope.Sources, Source{
-			Account:     account,
-			Source:      filepath.ToSlash(filepath.Join("WTF", "Account", account, "SavedVariables", "ChronicleCompanionForever.lua")),
-			ScoutingLua: scouting,
+			Account:        account,
+			Source:         filepath.ToSlash(filepath.Join("WTF", "Account", account, "SavedVariables", "ChronicleCompanionForever.lua")),
+			CollectionsLua: string(body[span.Start:span.End]),
+			path:           path, body: body, span: span,
 		})
 	}
 	sort.Slice(envelope.Sources, func(i, j int) bool {
@@ -114,12 +119,17 @@ func Build(root string) (Envelope, []Warning, error) {
 }
 
 // Write builds and durably writes an artifact. It returns an empty path when no
-// account contains non-empty scouting data.
+// account contains non-empty collections data.
 func Write(root, path string) (string, []Warning, error) {
 	envelope, warnings, err := Build(root)
 	if err != nil || len(envelope.Sources) == 0 {
 		return "", warnings, err
 	}
+	return WriteEnvelope(envelope, path, warnings)
+}
+
+// WriteEnvelope durably saves a captured envelope before its sources may be reset.
+func WriteEnvelope(envelope Envelope, path string, warnings []Warning) (string, []Warning, error) {
 	body, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return "", warnings, err
@@ -152,10 +162,111 @@ func Write(root, path string) (string, []Warning, error) {
 	}
 	removeTmp = false
 	if runtime.GOOS != "windows" {
-		if dir, err := os.Open(filepath.Dir(path)); err == nil {
-			_ = dir.Sync()
-			_ = dir.Close()
+		dir, err := os.Open(filepath.Dir(path))
+		if err != nil {
+			return "", warnings, err
+		}
+		err = dir.Sync()
+		closeErr := dir.Close()
+		if err != nil {
+			return "", warnings, err
+		}
+		if closeErr != nil {
+			return "", warnings, closeErr
 		}
 	}
 	return path, warnings, nil
+}
+
+// Drain archives the latest complete collections before replacing only that value.
+// persist must durably retain the envelope and associate it with every batch log.
+// It is deliberately independent of process state: live clients may restore their
+// in-memory collections on their next flush. External writers cannot be locked.
+func Drain(root string, persist func(Envelope) error) ([]Warning, error) {
+	retained := map[string]Source{}
+	for attempt := 0; attempt < 8; attempt++ {
+		envelope, warnings, err := Build(root)
+		if err != nil || len(envelope.Sources) == 0 {
+			return warnings, err
+		}
+		for _, source := range envelope.Sources {
+			retained[source.Source] = source
+		}
+		archive := Envelope{SchemaVersion: 1, Kind: Kind}
+		for _, source := range retained {
+			archive.Sources = append(archive.Sources, source)
+		}
+		sort.Slice(archive.Sources, func(i, j int) bool { return archive.Sources[i].Source < archive.Sources[j].Source })
+		if err := persist(archive); err != nil {
+			return warnings, err
+		}
+		changed := false
+		for _, source := range envelope.Sources {
+			if err := reset(source); err != nil {
+				if errors.Is(err, errChanged) {
+					changed = true
+					continue
+				}
+				return warnings, err
+			}
+		}
+		if !changed {
+			return warnings, nil
+		}
+	}
+	return nil, errors.New("collections kept changing during capture; last durable capture retained")
+}
+
+var errChanged = errors.New("SavedVariables changed during capture")
+
+func reset(source Source) error {
+	info, err := os.Lstat(source.path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("source is not a regular file")
+	}
+	body := append([]byte{}, source.body[:source.span.Start]...)
+	body = append(body, []byte("{}")...)
+	body = append(body, source.body[source.span.End:]...)
+	f, err := os.CreateTemp(filepath.Dir(source.path), ".sidekick-collections-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(info.Mode().Perm()); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	latest, err := os.ReadFile(source.path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(latest, source.body) {
+		return errChanged
+	}
+	if err := os.Rename(f.Name(), source.path); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		dir, err := os.Open(filepath.Dir(source.path))
+		if err != nil {
+			return err
+		}
+		defer dir.Close()
+		return dir.Sync()
+	}
+	return nil
 }

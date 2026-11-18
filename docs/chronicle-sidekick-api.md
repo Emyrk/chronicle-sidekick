@@ -174,10 +174,16 @@ For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
 `https://forever.chronicleclassic.com`, and selects `v22-cleu`. This takes
 precedence over shared `.build.info` metadata for other installed clients.
 It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. When
-ChronicleCompanionForever has non-empty scouting data, Sidekick also sends the
-distinct `sidekick-events` JSON artifact defined in
+ChronicleCompanionForever has non-empty `ChronicleCompanionForeverDB.collections`
+data, Sidekick also sends the distinct `sidekick-events` JSON artifact defined in
 [`sidekick-events-artifact-v1.md`](sidekick-events-artifact-v1.md). Forever
-does not use the Wrath `sidekick_storage` field.
+does not use the Wrath `sidekick_storage` field. This includes manual uploads
+and addon RPC archives. Once the log, complete `collections_lua` artifact, and
+exact pending association are durably retained, Sidekick resets only the
+`collections` value to `{}`, even while WoW is running. Unrelated settings remain
+unchanged. Changed sources are recaptured before reset. Retries use immutable
+archives; combat-only deduplication never skips a collections artifact. See the
+artifact spec for failure handling and the live-writer race limitations.
 
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
 `Logs/WoWCombatLog*.txt` files and uploads with Chronicle parser format

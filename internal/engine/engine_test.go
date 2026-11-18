@@ -641,7 +641,7 @@ func TestEngineUploadsCombatLogWhenOptionalSidecarCannotBeCopied(t *testing.T) {
 	require.FileExists(t, h.uploadRequests[0].Path)
 }
 
-func TestEngineCapturesForeverScoutingWithoutModifyingSources(t *testing.T) {
+func TestEngineCapturesAndClearsForeverCollectionsWhileRunning(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.captureSidekickStorage = false
@@ -651,8 +651,8 @@ func TestEngineCapturesForeverScoutingWithoutModifyingSources(t *testing.T) {
 	empty := filepath.Join(wowDir, "WTF", "Account", "Empty", "SavedVariables", "ChronicleCompanionForever.lua")
 	require.NoError(t, os.MkdirAll(filepath.Dir(alpha), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Dir(empty), 0o755))
-	require.NoError(t, os.WriteFile(alpha, []byte(`ChronicleCompanionForeverDB = { scouting = { ["Player-1"] = { delta = -2 } } }`), 0o600))
-	require.NoError(t, os.WriteFile(empty, []byte(`ChronicleCompanionForeverDB = { scouting = {} }`), 0o600))
+	require.NoError(t, os.WriteFile(alpha, []byte(`ChronicleCompanionForeverDB = { collections = { ["Player-1"] = { delta = -2 } } }`), 0o600))
+	require.NoError(t, os.WriteFile(empty, []byte(`ChronicleCompanionForeverDB = { collections = {} }`), 0o600))
 
 	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
 
@@ -662,6 +662,9 @@ func TestEngineCapturesForeverScoutingWithoutModifyingSources(t *testing.T) {
 	require.FileExists(t, artifact)
 	require.FileExists(t, alpha)
 	require.FileExists(t, empty)
+	live, err := os.ReadFile(alpha)
+	require.NoError(t, err)
+	require.Equal(t, `ChronicleCompanionForeverDB = { collections = {} }`, string(live))
 	body, err := os.ReadFile(artifact)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"account": "Alpha"`)
@@ -679,7 +682,7 @@ func TestEngineMalformedForeverScoutingDoesNotBlockUpload(t *testing.T) {
 	wowDir := filepath.Dir(filepath.Dir(h.logPath))
 	source := filepath.Join(wowDir, "WTF", "Account", "Bad", "SavedVariables", "ChronicleCompanionForever.lua")
 	require.NoError(t, os.MkdirAll(filepath.Dir(source), 0o755))
-	require.NoError(t, os.WriteFile(source, []byte(`ChronicleCompanionForeverDB = { scouting = execute() }`), 0o600))
+	require.NoError(t, os.WriteFile(source, []byte(`ChronicleCompanionForeverDB = { collections = execute() }`), 0o600))
 
 	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
 
@@ -898,4 +901,17 @@ func TestEngineWaitsForFirstFightAfterNewLog(t *testing.T) {
 	require.NoError(t, os.WriteFile(fresh, []byte("first fight"), 0o644))
 	h.step(t, t0.Add(15*time.Second), false)
 	require.Equal(t, engine.StateRecording, last())
+}
+
+func TestEngineCollectionsBypassCombatOnlyDedup(t *testing.T) {
+	t.Parallel()
+	h := newHarnessLookup(t, nil, nil, func(string) (upload.Have, error) { return upload.Have{Size: 999}, nil })
+	h.captureForeverScouting = true
+	source := filepath.Join(filepath.Dir(filepath.Dir(h.logPath)), "WTF", "Account", "A", "SavedVariables", "ChronicleCompanionForever.lua")
+	require.NoError(t, os.MkdirAll(filepath.Dir(source), 0700))
+	require.NoError(t, os.WriteFile(source, []byte(`ChronicleCompanionForeverDB={collections={unknown=true}}`), 0600))
+	h.step(t, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), true)
+	require.Equal(t, 1, h.uploads)
+	require.Zero(t, h.lookups)
+	require.NotEmpty(t, h.uploadRequests[0].ForeverScoutingPath)
 }

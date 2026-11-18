@@ -86,11 +86,19 @@ func (s State) EffectiveConfigHash() string {
 	return hash
 }
 
+// ArchiveSnapshot pairs one pending combat log with its immutable optional artifacts.
+type ArchiveSnapshot struct {
+	CombatPath      string `json:"combat_path"`
+	StoragePath     string `json:"storage_path,omitempty"`
+	CollectionsPath string `json:"collections_path,omitempty"`
+}
+
 // ArchiveGroup is one retained play session and its Chronicle log group.
 type ArchiveGroup struct {
-	ID               string `json:"id"`
-	InstallDirectory string `json:"install_directory"`
-	InstallID        string `json:"install_id"`
+	Snapshot         *ArchiveSnapshot `json:"snapshot,omitempty"`
+	ID               string           `json:"id"`
+	InstallDirectory string           `json:"install_directory"`
+	InstallID        string           `json:"install_id"`
 	// SourceKey distinguishes independently appended streams within one install,
 	// such as ChronicleCompanion's per-character 1.12a files.
 	SourceKey string `json:"source_key,omitempty"`
@@ -219,6 +227,10 @@ func (s *Store) Get() State {
 	cp.Issues = append([]sidekick.Issue(nil), s.st.Issues...)
 	cp.ArchiveGroups = make(map[string]ArchiveGroup, len(s.st.ArchiveGroups))
 	for k, v := range s.st.ArchiveGroups {
+		if v.Snapshot != nil {
+			snapshot := *v.Snapshot
+			v.Snapshot = &snapshot
+		}
 		v.Files = append([]string(nil), v.Files...)
 		cp.ArchiveGroups[k] = v
 	}
@@ -274,15 +286,22 @@ func (s *Store) Update(fn func(*State)) error {
 	if err := os.Rename(tmp, s.path); err != nil {
 		return err
 	}
-	s.st = next
-	// Persist the directory entry as well on platforms that support syncing
-	// directories. Windows rename durability is handled by the filesystem API.
+	// A failed directory sync must not authorize callers to clear source data.
 	if runtime.GOOS != "windows" {
-		if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
-			_ = dir.Sync()
-			_ = dir.Close()
+		dir, err := os.Open(filepath.Dir(s.path))
+		if err != nil {
+			return err
+		}
+		syncErr := dir.Sync()
+		closeErr := dir.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
+	s.st = next
 	return nil
 }
 

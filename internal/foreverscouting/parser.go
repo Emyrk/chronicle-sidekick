@@ -1,4 +1,4 @@
-// Package foreverscouting extracts WoW Forever scouting data from SavedVariables
+// Package foreverscouting extracts WoW Forever collections data from SavedVariables
 // without executing Lua.
 package foreverscouting
 
@@ -22,10 +22,10 @@ const (
 )
 
 type value struct {
-	kind       valueKind
-	start, end int
-	fields     int
-	scouting   *value
+	kind        valueKind
+	start, end  int
+	fields      int
+	collections *value
 }
 
 type parser struct {
@@ -34,48 +34,60 @@ type parser struct {
 }
 
 // Extract validates a complete data-only SavedVariables file and returns the
-// exact byte slice containing its non-empty scouting table expression.
-func Extract(src []byte) (scouting string, present bool, err error) {
+// exact byte slice containing its non-empty collections table expression.
+func Extract(src []byte) (collections string, present bool, err error) {
+	value, present, err := Locate(src)
+	if err != nil || !present {
+		return "", present, err
+	}
+	return string(src[value.Start:value.End]), true, nil
+}
+
+// Span identifies the exact collections value, excluding surrounding settings.
+type Span struct{ Start, End int }
+
+// Locate validates the entire source and returns surgical replacement offsets.
+func Locate(src []byte) (span Span, present bool, err error) {
 	if !utf8.Valid(src) {
-		return "", false, fmt.Errorf("restricted Lua is not valid UTF-8")
+		return Span{}, false, fmt.Errorf("restricted Lua is not valid UTF-8")
 	}
 	p := parser{src: src}
 	if err := p.skip(); err != nil {
-		return "", false, err
+		return Span{}, false, err
 	}
 	name, ok := p.identifier()
 	if !ok || name != globalName {
-		return "", false, p.errorf("expected assignment to %s", globalName)
+		return Span{}, false, p.errorf("expected assignment to %s", globalName)
 	}
 	if err := p.skip(); err != nil {
-		return "", false, err
+		return Span{}, false, err
 	}
 	if !p.take('=') {
-		return "", false, p.errorf("expected '='")
+		return Span{}, false, p.errorf("expected '='")
 	}
 	root, err := p.parseValue(true)
 	if err != nil {
-		return "", false, err
+		return Span{}, false, err
 	}
 	if root.kind != kindTable {
-		return "", false, p.errorf("%s must be a table", globalName)
+		return Span{}, false, p.errorf("%s must be a table", globalName)
 	}
 	if err := p.skip(); err != nil {
-		return "", false, err
+		return Span{}, false, err
 	}
 	if p.pos != len(p.src) {
-		return "", false, p.errorf("unexpected expression or second statement")
+		return Span{}, false, p.errorf("unexpected expression or second statement")
 	}
-	if root.scouting == nil || root.scouting.kind == kindNil || root.scouting.kind == kindFalse {
-		return "", false, nil
+	if root.collections == nil || root.collections.kind == kindNil || root.collections.kind == kindFalse {
+		return Span{}, false, nil
 	}
-	if root.scouting.kind != kindTable {
-		return "", false, p.errorf("scouting must be a table, nil, or false")
+	if root.collections.kind != kindTable {
+		return Span{}, false, p.errorf("collections must be a table, nil, or false")
 	}
-	if root.scouting.fields == 0 {
-		return "", false, nil
+	if root.collections.fields == 0 {
+		return Span{}, false, nil
 	}
-	return string(src[root.scouting.start:root.scouting.end]), true, nil
+	return Span{root.collections.start, root.collections.end}, true, nil
 }
 
 func (p *parser) parseValue(root bool) (value, error) {
@@ -176,12 +188,12 @@ func (p *parser) parseTable(root bool) (value, error) {
 			return value{}, err
 		}
 		out.fields++
-		if root && keyed && key == "scouting" {
-			if out.scouting != nil {
-				return value{}, p.errorf("duplicate scouting field")
+		if root && keyed && key == "collections" {
+			if out.collections != nil {
+				return value{}, p.errorf("duplicate collections field")
 			}
 			copy := entry
-			out.scouting = &copy
+			out.collections = &copy
 		}
 		if err := p.skip(); err != nil {
 			return value{}, err
