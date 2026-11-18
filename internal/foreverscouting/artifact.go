@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	Filename = "forever-scouting-v1.json"
-	Kind     = "chronicle_companion_forever_scouting"
+	Filename = "sidekick-events-v1.json"
+	Kind     = "sidekick-events"
 )
 
 type Envelope struct {

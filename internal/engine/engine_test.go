@@ -658,7 +658,7 @@ func TestEngineCapturesForeverScoutingWithoutModifyingSources(t *testing.T) {
 
 	require.Len(t, h.uploadRequests, 1)
 	artifact := h.uploadRequests[0].ForeverScoutingPath
-	require.Equal(t, "forever-scouting-v1.json", filepath.Base(artifact))
+	require.Equal(t, "sidekick-events-v1.json", filepath.Base(artifact))
 	require.FileExists(t, artifact)
 	require.FileExists(t, alpha)
 	require.FileExists(t, empty)
@@ -831,7 +831,7 @@ func TestEngineRecoversPendingArchiveAfterRestart(t *testing.T) {
 	archiveDir := filepath.Join(wowDir, "ChronicleSidekick", "group-1")
 	require.NoError(t, os.MkdirAll(archiveDir, 0o755))
 	combatPath := filepath.Join(archiveDir, "Jan_01_26_12_00_CombatLog.txt")
-	scoutingPath := filepath.Join(archiveDir, "forever-scouting-v1.json")
+	scoutingPath := filepath.Join(archiveDir, "sidekick-events-v1.json")
 	require.NoError(t, os.WriteFile(combatPath, []byte("some combat"), 0o600))
 	require.NoError(t, os.WriteFile(scoutingPath, []byte(`{"schema_version":1}`), 0o600))
 	st, err := store.Open(filepath.Join(root, "state.json"))

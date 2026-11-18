@@ -1,8 +1,14 @@
-# WoW Forever scouting artifact, version 1
+# Sidekick events artifact, version 1
 
 Chronicle Sidekick may attach scouting data from ChronicleCompanionForever to a
 WoW Forever combat-log upload. This artifact is distinct from the Wrath
 `sidekick_storage` artifact.
+
+The generic `sidekick-events` artifact carries addon event collections. Version 1
+captures the complete Forever `scouting` table, including unknown future
+collections such as battleground events. The `scouting_lua` field names the
+addon storage container, not a restriction to player-level or guild events.
+New collections inside that container do not require a new artifact kind.
 
 ## Multipart contract
 
@@ -10,8 +16,8 @@ The upload request includes the following optional multipart part:
 
 | Property | Value |
 | --- | --- |
-| Field name | `forever_scouting` |
-| Filename | `forever-scouting-v1.json` |
+| Field name | `sidekick-events` |
+| Filename | `sidekick-events-v1.json` |
 | Content type | `application/json` |
 
 Sidekick sends the part on initial `upload-v2` requests and append requests when
@@ -47,7 +53,7 @@ The version 1 envelope is:
 ```json
 {
   "schema_version": 1,
-  "kind": "chronicle_companion_forever_scouting",
+  "kind": "sidekick-events",
   "sources": [
     {
       "account": "ACCOUNT_DIR_NAME",
@@ -61,7 +67,7 @@ The version 1 envelope is:
 Fields have these meanings:
 
 - `schema_version` is the integer `1`.
-- `kind` is the exact string `chronicle_companion_forever_scouting`.
+- `kind` is the exact string `sidekick-events`.
 - `sources` contains one entry for each account with non-empty scouting data.
 - `account` is the source account directory basename.
 - `source` is the slash-separated path relative to the Forever root.
@@ -81,7 +87,7 @@ implicit field. Field values such as `false`, `nil`, or the empty string still
 count as entries. A non-table scouting value other than `nil` or `false` is
 unsupported and causes that source to be skipped with a warning.
 
-Sidekick creates `forever-scouting-v1.json` beside the immutable combat-log
+Sidekick creates `sidekick-events-v1.json` beside the immutable combat-log
 snapshot. It does not modify, clear, rename, or delete the live
 ChronicleCompanionForever SavedVariables source. Pending archive recovery uses
 the retained JSON artifact, so retries after a Sidekick restart attach the same

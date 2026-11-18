@@ -144,13 +144,13 @@ func TestUpload(t *testing.T) {
 
 	t.Run("forever scouting", func(t *testing.T) {
 		t.Parallel()
-		scoutingPath := filepath.Join(t.TempDir(), "forever-scouting-v1.json")
-		const artifact = `{"schema_version":1,"kind":"chronicle_companion_forever_scouting","sources":[]}`
+		scoutingPath := filepath.Join(t.TempDir(), "sidekick-events-v1.json")
+		const artifact = `{"schema_version":1,"kind":"sidekick-events","sources":[]}`
 		require.NoError(t, os.WriteFile(scoutingPath, []byte(artifact), 0o600))
 		var content, filename, contentType string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			require.NoError(t, r.ParseMultipartForm(1<<20))
-			f, h, err := r.FormFile("forever_scouting")
+			f, h, err := r.FormFile("sidekick-events")
 			require.NoError(t, err)
 			b, err := io.ReadAll(f)
 			require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestUpload(t *testing.T) {
 		_, err := c.Upload(context.Background(), path, "", size)
 		require.NoError(t, err)
 		require.Equal(t, artifact, content)
-		require.Equal(t, "forever-scouting-v1.json", filename)
+		require.Equal(t, "sidekick-events-v1.json", filename)
 		require.Equal(t, "application/json", contentType)
 	})
 

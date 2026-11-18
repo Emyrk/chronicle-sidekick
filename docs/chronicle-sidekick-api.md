@@ -175,8 +175,8 @@ For WoW Forever, Sidekick recognizes the `wowf` product in `.flavor.info`
 precedence over shared `.build.info` metadata for other installed clients.
 It watches `Logs/WoWCombatLog*.txt` and supports uploading on game exit. When
 ChronicleCompanionForever has non-empty scouting data, Sidekick also sends the
-distinct `forever_scouting` JSON artifact defined in
-[`forever-scouting-artifact-v1.md`](forever-scouting-artifact-v1.md). Forever
+distinct `sidekick-events` JSON artifact defined in
+[`sidekick-events-artifact-v1.md`](sidekick-events-artifact-v1.md). Forever
 does not use the Wrath `sidekick_storage` field.
 
 For the `hermesproxy_1_14_2_cc` log format, Sidekick watches the standard
