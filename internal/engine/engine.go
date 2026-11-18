@@ -367,16 +367,8 @@ func (e *Engine) requestUpload(dirs []string) {
 // UploadNow.
 func (e *Engine) TokenChanged() {
 	e.dirty.Store(true)
-	e.mu.Lock()
-	if len(e.blocked) > 0 {
-		e.pending = append(e.pending, e.blocked...)
-		e.blocked = nil
-		select {
-		case e.kick <- struct{}{}:
-		default:
-		}
-	}
-	e.mu.Unlock()
+	// The poll loop refreshes the cached token before releasing blocked jobs.
+	// Waking the worker here could let it consume them with the rejected token.
 	select {
 	case e.wake <- struct{}{}:
 	default:
