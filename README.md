@@ -31,6 +31,15 @@ GitHub Releases provides both installed and portable options:
 - **macOS:** a drag-to-Applications DMG, plus the zipped universal app used by automatic updates.
 - **Linux:** portable tarballs for x64 and ARM64.
 
+## Linux with Wine or Proton
+
+Run the native Linux Sidekick build. If automatic detection misses a launcher-managed
+installation, use **Add WoW folder…** and select the directory containing `WoW.exe`.
+Sidekick resolves Wine and Proton game paths using the running process's
+`WINEPREFIX` and `dosdevices` drive mappings, so each running client stays associated
+with its own configured installation. Sidekick needs permission to read the game's
+process information and read and write files in the game directory.
+
 ## ChronicleCompanion RPC
 
 Vanilla 1.12a ChronicleCompanion can request an immutable combat-log upload
